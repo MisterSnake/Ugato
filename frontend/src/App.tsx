@@ -1,122 +1,91 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useRef, useState } from 'react'
+import { createGameSocket } from './game/gameSocket'
+import type { GameSocket, GameSocketFactory } from './game/gameSocket'
+import type { CreateGameRequest, GameSummary, ServerError } from './game/types'
+import { waitingGameFlag } from './game/waitingGameFlag'
+import { CreateGameForm } from './screens/CreateGameForm'
+import { HomeScreen } from './screens/HomeScreen'
+import { WaitingScreen } from './screens/WaitingScreen'
 
-function App() {
-  const [count, setCount] = useState(0)
+type View =
+  | { screen: 'home'; notice?: string }
+  | { screen: 'form'; serverError?: ServerError }
+  | { screen: 'waiting'; game: GameSummary }
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+const CONNECTION_LOST_NOTICE = 'Connection lost, the game was removed'
 
-      <div className="ticks"></div>
+interface AppProps {
+  createSocket?: GameSocketFactory
+}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+// Same origin as the page; in development, Vite proxies /api to the backend.
+function gameSocketUrl(): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${protocol}://${window.location.host}/api/ws`
+}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+// A game still flagged at load time was lost when the page was refreshed.
+function initialView(): View {
+  return waitingGameFlag.isSet()
+    ? { screen: 'home', notice: CONNECTION_LOST_NOTICE }
+    : { screen: 'home' }
+}
+
+function App({ createSocket = createGameSocket }: AppProps) {
+  const [view, setView] = useState(initialView)
+  const socketRef = useRef<GameSocket | null>(null)
+
+  // Cleared here, not in initialView, which StrictMode runs twice.
+  useEffect(() => waitingGameFlag.clear(), [])
+  useEffect(() => () => socketRef.current?.close(), [])
+
+  function openSocket(): GameSocket {
+    const socket = createSocket(gameSocketUrl())
+    socket.on('game_created', (game) => {
+      waitingGameFlag.set()
+      setView({ screen: 'waiting', game })
+    })
+    socket.on('error', (serverError) =>
+      setView({ screen: 'form', serverError }),
+    )
+    socket.on('close', ({ intentional }) => {
+      if (intentional) return
+      waitingGameFlag.clear()
+      socketRef.current = null
+      setView({ screen: 'home', notice: CONNECTION_LOST_NOTICE })
+    })
+    return socket
+  }
+
+  // The socket is opened on submit, never in an effect, so StrictMode's double
+  // effect run cannot create a game.
+  function createGame(request: CreateGameRequest) {
+    socketRef.current ??= openSocket()
+    socketRef.current.createGame(request)
+  }
+
+  function cancelGame() {
+    waitingGameFlag.clear()
+    socketRef.current?.cancel()
+    socketRef.current = null
+    setView({ screen: 'home' })
+  }
+
+  switch (view.screen) {
+    case 'home':
+      return (
+        <HomeScreen
+          notice={view.notice}
+          onCreateGame={() => setView({ screen: 'form' })}
+        />
+      )
+    case 'form':
+      return (
+        <CreateGameForm onSubmit={createGame} serverError={view.serverError} />
+      )
+    case 'waiting':
+      return <WaitingScreen game={view.game} onCancel={cancelGame} />
+  }
 }
 
 export default App

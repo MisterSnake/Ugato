@@ -18,7 +18,7 @@ Run commands from inside the relevant subdirectory.
 
 - Run tests: `./.venv/Scripts/python.exe -m pytest -q` (Windows venv; `uv run pytest` currently fails on this machine with "uv trampoline failed to canonicalize script path", so prefer the venv binary).
 - Single test: `./.venv/Scripts/python.exe -m pytest tests/test_health.py::test_health -q`
-- Dev server: `./.venv/Scripts/python.exe -m uvicorn app.main:app --reload` (serves on port 8000; API routes live under `/api`).
+- Dev server: `./.venv/Scripts/python.exe -m uvicorn app.main:app --reload` (serves on port 8000; API routes live under `/api`). Run a single worker and never pass `--workers`: the game registry lives in process memory.
 
 ### Frontend (`cd frontend`)
 
@@ -27,14 +27,18 @@ Run commands from inside the relevant subdirectory.
 - Build: `npm run build` (runs `tsc -b` then `vite build`, output to `dist/`; `dist/` is generated, don't hand-edit it)
 - Lint: `npm run lint` (oxlint, config in `.oxlintrc.json`)
 - Type-check only: `npx tsc -b`
-- There is no frontend test runner configured.
+- Run tests: `npm test` (Vitest + React Testing Library on jsdom; setup in `src/test/setup.ts`)
+- Single test file: `npm test -- src/App.test.tsx`
 
 ## Architecture: how the pieces connect
 
-- The backend's only API surface is `app/main.py`: a single `FastAPI` instance with `GET /api/health`. New routes should go under the `/api` prefix so they match what the frontend calls.
-- CORS is restricted to `http://localhost:5173` (the Vite dev server origin) in `app/main.py`. If the frontend runs on a different origin, or is served from the backend, update `allow_origins` there. Otherwise browser requests from the frontend fail even though curl works.
-- The frontend currently has no API client and no proxy: `frontend/vite.config.ts` only registers the React plugin. Calls to `/api/...` from the frontend therefore need either an absolute URL to `http://localhost:8000` (which CORS allows only from 5173) or a Vite `server.proxy` entry for `/api` added to `vite.config.ts`.
-- `frontend/src/App.tsx` is still the unmodified Vite starter page (counter, logos, links). Treat it as placeholder, not as a design to preserve.
+- `backend/app/main.py` holds the `FastAPI` instance, `GET /api/health`, and mounts the game router. New routes should go under the `/api` prefix so the Vite proxy forwards them.
+- Games use one WebSocket, `WS /api/ws` (`backend/app/games/ws.py`). The message types and error codes are documented in `backend/README.md`. A game lives only as long as its creator's connection.
+- `backend/app/games/` also has the models, the pure validation rules and the in-memory `GameRegistry`. Tests override the `get_registry` dependency to get a fresh registry.
+- Because the registry is process memory, the server must run as a single worker. With more, name uniqueness breaks.
+- `frontend/vite.config.ts` proxies `/api` (with `ws: true`) to `http://localhost:8000`, so the frontend uses same-origin URLs. CORS in `app/main.py` still allows only `http://localhost:5173` for direct HTTP calls to port 8000; it does not apply to WebSockets.
+- `frontend/src/App.tsx` is the screen state machine (home → form → waiting). Screens are in `src/screens/`. Components never use `WebSocket` directly: they go through `src/game/gameSocket.ts`, and tests inject `src/test/FakeWebSocket.ts`.
+- `frontend/src/game/validation.ts` mirrors `backend/app/games/validation.py`. The server is the source of truth, so change both together.
 - Tests in `backend/tests/` use `fastapi.testclient.TestClient` against `app.main.app` directly; no server needs to be running.
 
 ## Conventions
