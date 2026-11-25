@@ -1,0 +1,22 @@
+schema: spec-driven
+
+context: |
+  Language rules:
+  - All source code, identifiers, inline comments, commit messages, and test cases MUST be written in English.
+  - Documentation and OpenSpec artifacts (proposal, specs, design, tasks) may follow the conversation language unless specified otherwise.
+
+  Development methodology:
+  - Strict Test-Driven Development (TDD) is mandatory for all production code.
+  - Follow the Red-Green-Refactor cycle: write a failing test first, implement the minimal code to make it pass, then refactor while keeping tests green.
+
+rules:
+  tasks:
+    - Structure every implementation task explicitly as a TDD cycle (1. Write failing test, 2. Implement minimal passing code, 3. Refactor).
+    - Never group tests into a separate "add tests at the end" task; every feature or bugfix task must start with its corresponding test.
+
+operations:
+  apply:
+    guidance:
+      - Before writing any production code, create the unit/integration test and run the test suite to confirm it fails (Red).
+      - Write only the minimal English-named code needed to pass the test (Green), then refactor without breaking the suite.
+      - Verify that all code, comments, and test descriptions are written in English before marking a task complete.
