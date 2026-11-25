@@ -31,6 +31,11 @@ export interface GameSummary {
   players: Player[]
 }
 
+export interface LobbyState {
+  status: 'connecting' | 'ready' | 'disconnected'
+  games: GameSummary[]
+}
+
 export type ErrorField =
   | 'username'
   | 'color'
@@ -56,4 +61,5 @@ export interface ServerError {
 export type ServerMessage =
   | { type: 'game_created'; game: GameSummary }
   | { type: 'game_cancelled' }
+  | { type: 'games_list'; games: GameSummary[] }
   | ({ type: 'error' } & ServerError)

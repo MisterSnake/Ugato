@@ -20,6 +20,7 @@ export type SocketConstructor = new (url: string) => SocketLike
 
 export interface GameSocketEvents {
   game_created: GameSummary
+  games_list: GameSummary[]
   error: ServerError
   close: { intentional: boolean }
 }
@@ -29,6 +30,7 @@ type Handlers = {
 }
 
 export interface GameSocket {
+  subscribeLobby(): void
   createGame(request: CreateGameRequest): void
   cancel(): void
   close(): void
@@ -45,7 +47,12 @@ export function createGameSocket(
   WebSocketImpl: SocketConstructor = WebSocket,
 ): GameSocket {
   const socket = new WebSocketImpl(url)
-  const handlers: Handlers = { game_created: [], error: [], close: [] }
+  const handlers: Handlers = {
+    game_created: [],
+    games_list: [],
+    error: [],
+    close: [],
+  }
   const pending: string[] = []
   let isOpen = false
   let intentionalClose = false
@@ -77,6 +84,8 @@ export function createGameSocket(
     const message = JSON.parse(String(event.data)) as ServerMessage
     if (message.type === 'game_created') {
       emit('game_created', message.game)
+    } else if (message.type === 'games_list') {
+      emit('games_list', message.games)
     } else if (message.type === 'error') {
       const { type: _type, ...error } = message
       emit('error', error)
@@ -89,12 +98,14 @@ export function createGameSocket(
   })
 
   return {
+    subscribeLobby() {
+      send({ type: 'subscribe_lobby' })
+    },
     createGame(request) {
       send({ type: 'create_game', ...request })
     },
     cancel() {
       send({ type: 'cancel_game' })
-      close()
     },
     close,
     on(event, handler) {

@@ -4,23 +4,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, WebSocket
 
+from app.games.lobby import LobbyHub, game_summary, get_lobby_hub, lobby_snapshot
 from app.games.models import Game
 from app.games.registry import GameRegistry, get_registry
 from app.games.validation import ValidationError, validate_create_request
 
 router = APIRouter()
-
-
-def game_summary(game: Game) -> dict[str, Any]:
-    return {
-        "name": game.name,
-        "maxPlayers": game.max_players,
-        "boardWidth": game.board_width,
-        "boardHeight": game.board_height,
-        "players": [
-            {"name": player.name, "color": player.color} for player in game.players
-        ],
-    }
 
 
 def parse_message(text: str | None) -> dict[str, Any] | None:
@@ -52,28 +41,54 @@ async def send_error(
     await websocket.send_json(message)
 
 
-class CreatorSession:
-    """The state of one connection: at most one game, owned by its creator."""
+class ClientSession:
+    """The state of one connection.
 
-    def __init__(self, websocket: WebSocket, registry: GameRegistry) -> None:
+    It can follow the lobby and own at most one game, as its creator.
+    """
+
+    def __init__(
+        self, websocket: WebSocket, registry: GameRegistry, hub: LobbyHub
+    ) -> None:
         self._websocket = websocket
         self._registry = registry
+        self._hub = hub
         self._game: Game | None = None
 
     async def handle(self, message: dict[str, Any] | None) -> None:
         match message:
+            case {"type": "subscribe_lobby"}:
+                self._hub.subscribe(self._websocket)
+                await self._websocket.send_json(lobby_snapshot(self._registry))
             case {"type": "create_game"}:
                 await self._create(message)
             case {"type": "cancel_game"}:
-                self.end_game()
-                await self._websocket.send_json({"type": "game_cancelled"})
+                await self._cancel()
             case _:
                 await send_error(self._websocket, "invalid_message")
 
-    def end_game(self) -> None:
-        if self._game is not None:
-            self._registry.remove(self._game)
-            self._game = None
+    async def close(self) -> None:
+        # Unsubscribed first, so the broadcast never targets the closing socket.
+        self._hub.unsubscribe(self._websocket)
+        if self._end_game():
+            await self._broadcast_lobby()
+
+    def _end_game(self) -> bool:
+        """Remove this connection's game. Return whether there was one."""
+        if self._game is None:
+            return False
+        self._registry.remove(self._game)
+        self._game = None
+        return True
+
+    async def _cancel(self) -> None:
+        removed = self._end_game()
+        try:
+            await self._websocket.send_json({"type": "game_cancelled"})
+        finally:
+            # The others must hear about it even if the creator is already gone.
+            if removed:
+                await self._broadcast_lobby()
 
     async def _create(self, message: dict[str, Any]) -> None:
         if self._game is not None:
@@ -93,18 +108,23 @@ class CreatorSession:
         await self._websocket.send_json(
             {"type": "game_created", "game": game_summary(game)}
         )
+        await self._broadcast_lobby()
+
+    async def _broadcast_lobby(self) -> None:
+        await self._hub.broadcast(lobby_snapshot(self._registry))
 
 
 @router.websocket("/api/ws")
 async def game_socket(
     websocket: WebSocket,
     registry: Annotated[GameRegistry, Depends(get_registry)],
+    hub: Annotated[LobbyHub, Depends(get_lobby_hub)],
 ) -> None:
     await websocket.accept()
-    session = CreatorSession(websocket, registry)
+    session = ClientSession(websocket, registry, hub)
     try:
         async for text in iter_frames(websocket):
             await session.handle(parse_message(text))
     finally:
         # A game lives only as long as its creator's connection.
-        session.end_game()
+        await session.close()

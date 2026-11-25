@@ -55,6 +55,25 @@ describe('createGameSocket', () => {
     expect(server.sent).toEqual([{ type: 'create_game', ...request }])
   })
 
+  it('sends subscribe_lobby once the socket opens', () => {
+    const { client, server } = connect()
+
+    client.subscribeLobby()
+    expect(server.sent).toEqual([])
+    server.simulateOpen()
+
+    expect(server.sent).toEqual([{ type: 'subscribe_lobby' }])
+  })
+
+  it('sends subscribe_lobby immediately when the socket is already open', () => {
+    const { client, server } = connect()
+    server.simulateOpen()
+
+    client.subscribeLobby()
+
+    expect(server.sent).toEqual([{ type: 'subscribe_lobby' }])
+  })
+
   it('passes game_created to its handlers', () => {
     const { client, server } = connect()
     const handler = vi.fn()
@@ -63,6 +82,16 @@ describe('createGameSocket', () => {
     server.simulateMessage({ type: 'game_created', game })
 
     expect(handler).toHaveBeenCalledExactlyOnceWith(game)
+  })
+
+  it('passes games_list to its handlers', () => {
+    const { client, server } = connect()
+    const handler = vi.fn()
+    client.on('games_list', handler)
+
+    server.simulateMessage({ type: 'games_list', games: [game] })
+
+    expect(handler).toHaveBeenCalledExactlyOnceWith([game])
   })
 
   it('passes errors to their handlers', () => {
@@ -82,7 +111,7 @@ describe('createGameSocket', () => {
     })
   })
 
-  it('sends cancel_game and reports the close as intentional', () => {
+  it('sends cancel_game and keeps the socket open', () => {
     const { client, server } = connect()
     const handler = vi.fn()
     client.on('close', handler)
@@ -91,8 +120,8 @@ describe('createGameSocket', () => {
     client.cancel()
 
     expect(server.sent).toEqual([{ type: 'cancel_game' }])
-    expect(server.closed).toBe(true)
-    expect(handler).toHaveBeenCalledExactlyOnceWith({ intentional: true })
+    expect(server.closed).toBe(false)
+    expect(handler).not.toHaveBeenCalled()
   })
 
   it('reports close() as intentional', () => {

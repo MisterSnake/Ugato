@@ -29,12 +29,21 @@ game names would no longer be unique. A restart removes every game.
 Messages are JSON objects sent as text frames. A game lives only while its
 creator's connection is open: cancelling or disconnecting (refresh, tab close,
 network loss) removes it and frees its name. A connection can own one game at a
-time.
+time. `cancel_game` leaves the connection open, so the same connection can create
+another game.
+
+A connection that sends `subscribe_lobby` receives a `games_list` right away, and
+a new one whenever a game is created, cancelled or removed by a disconnect. Each
+`games_list` is the full list, not a change to the previous one. The subscription
+lasts until the connection closes, including while the connection owns a game.
+Subscribing again only sends a fresh list. When a creator is subscribed,
+`game_created` or `game_cancelled` arrives before the updated list.
 
 ### Client to server
 
 | `type` | Fields |
 |---|---|
+| `subscribe_lobby` | none |
 | `create_game` | `username`, `color`, `gameName`, `maxPlayers` (optional, default 2), `boardWidth`, `boardHeight` |
 | `cancel_game` | none |
 
@@ -52,6 +61,7 @@ Field rules:
 |---|---|
 | `game_created` | `game`: `{name, maxPlayers, boardWidth, boardHeight, players: [{name, color}]}` |
 | `game_cancelled` | none. Also sent when there was no game to cancel. |
+| `games_list` | `games`: list of games, newest first, each with the same fields as `game` in `game_created` |
 | `error` | `code`, plus `field` for input errors |
 
 ### Error codes

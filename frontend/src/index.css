@@ -84,6 +84,49 @@ button {
   cursor: pointer;
 }
 
+h2 {
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.games {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+
+  li {
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  strong {
+    color: var(--text-h);
+    overflow-wrap: anywhere;
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: baseline;
+    column-gap: 0.75rem;
+    margin: 0.25rem 0 0;
+  }
+
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
 .error,
 .notice {
   margin: 0.25rem 0;
