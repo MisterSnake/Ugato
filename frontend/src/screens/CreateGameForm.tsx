@@ -6,14 +6,14 @@ import {
   MIN_PLAYERS,
   validateDraft,
 } from '../game/validation'
-import { COLORS } from '../game/types'
 import type {
   CreateGameRequest,
   ErrorField,
   ServerError,
 } from '../game/types'
-import { colorLabel } from './colorLabel'
-import { ERROR_MESSAGES } from './errorMessages'
+import { ColorField } from './ColorField'
+import { ErrorMessage } from './ErrorMessage'
+import { useFieldErrors } from './useFieldErrors'
 
 interface CreateGameFormProps {
   onSubmit: (request: CreateGameRequest) => void
@@ -39,26 +39,6 @@ export function CreateGameForm({
     boardHeight: String(BOARD_MIN_SIZE),
   })
 
-  const [touched, setTouched] = useState<Partial<Record<ErrorField, boolean>>>(
-    {},
-  )
-  const [submitted, setSubmitted] = useState(false)
-  // The server error stops applying once the user edits the field it is about.
-  const [outdatedError, setOutdatedError] = useState<ServerError>()
-  const activeServerError =
-    serverError === outdatedError ? undefined : serverError
-
-  function setValue(name: keyof typeof values, value: string) {
-    setValues((current) => ({ ...current, [name]: value }))
-    const field =
-      name === 'boardWidth' || name === 'boardHeight' ? 'board' : name
-    if (serverError?.field === field) setOutdatedError(serverError)
-  }
-
-  function touch(field: ErrorField) {
-    setTouched((current) => ({ ...current, [field]: true }))
-  }
-
   const result = validateDraft({
     ...values,
     maxPlayers: Number(values.maxPlayers),
@@ -66,40 +46,26 @@ export function CreateGameForm({
     boardHeight: Number(values.boardHeight),
   })
 
-  // A field shows its client error once the user has left it or tried to submit.
-  function errorFor(field: ErrorField) {
-    const clientError =
-      'errors' in result && (submitted || touched[field])
-        ? result.errors[field]
-        : undefined
-    if (clientError) return clientError
-    return activeServerError?.field === field
-      ? activeServerError.code
-      : undefined
-  }
+  const errors = useFieldErrors(
+    'errors' in result ? result.errors : {},
+    serverError,
+  )
+  const { errorProps } = errors
 
-  function errorProps(field: ErrorField) {
-    const invalid = errorFor(field) !== undefined
-    return {
-      'aria-invalid': invalid,
-      'aria-describedby': invalid ? `${field}-error` : undefined,
-    }
+  function setValue(name: keyof typeof values, value: string) {
+    setValues((current) => ({ ...current, [name]: value }))
+    const field =
+      name === 'boardWidth' || name === 'boardHeight' ? 'board' : name
+    errors.edit(field)
   }
 
   function errorMessage(field: ErrorField) {
-    const code = errorFor(field)
-    return (
-      code && (
-        <p id={`${field}-error`} role="alert" className="error">
-          {ERROR_MESSAGES[code]}
-        </p>
-      )
-    )
+    return <ErrorMessage id={`${field}-error`} code={errors.errorFor(field)} />
   }
 
   function handleSubmit(event: { preventDefault(): void }) {
     event.preventDefault()
-    setSubmitted(true)
+    errors.markSubmitted()
     if ('request' in result) onSubmit(result.request)
   }
 
@@ -113,31 +79,17 @@ export function CreateGameForm({
             id="username"
             value={values.username}
             onChange={(event) => setValue('username', event.target.value)}
-            onBlur={() => touch('username')}
+            onBlur={() => errors.touch('username')}
             {...errorProps('username')}
           />
           {errorMessage('username')}
         </div>
 
-        <fieldset
-          className="field colors"
-          aria-describedby={errorProps('color')['aria-describedby']}
-        >
-          <legend>Color</legend>
-          {COLORS.map((color) => (
-            <label key={color}>
-              <input
-                type="radio"
-                name="color"
-                value={color}
-                checked={values.color === color}
-                onChange={() => setValue('color', color)}
-              />
-              {colorLabel(color)}
-            </label>
-          ))}
-          {errorMessage('color')}
-        </fieldset>
+        <ColorField
+          value={values.color}
+          error={errors.errorFor('color')}
+          onChange={(color) => setValue('color', color)}
+        />
 
         <div className="field">
           <label htmlFor="gameName">Game name</label>
@@ -145,7 +97,7 @@ export function CreateGameForm({
             id="gameName"
             value={values.gameName}
             onChange={(event) => setValue('gameName', event.target.value)}
-            onBlur={() => touch('gameName')}
+            onBlur={() => errors.touch('gameName')}
             {...errorProps('gameName')}
           />
           {errorMessage('gameName')}
@@ -185,7 +137,7 @@ export function CreateGameForm({
                 max={BOARD_MAX_SIZE}
                 value={values[name]}
                 onChange={(event) => setValue(name, event.target.value)}
-                onBlur={() => touch('board')}
+                onBlur={() => errors.touch('board')}
                 aria-invalid={errorProps('board')['aria-invalid']}
               />
             </div>
@@ -193,11 +145,7 @@ export function CreateGameForm({
           {errorMessage('board')}
         </fieldset>
 
-        {activeServerError && !activeServerError.field && (
-          <p role="alert" className="error">
-            {ERROR_MESSAGES[activeServerError.code]}
-          </p>
-        )}
+        <ErrorMessage code={errors.formError} />
 
         <button type="submit">Create</button>
       </form>

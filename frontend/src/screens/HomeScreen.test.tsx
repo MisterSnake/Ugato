@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import type { LobbyState } from '../game/types'
+import type { GameSummary, LobbyState } from '../game/types'
 import { HomeScreen } from './HomeScreen'
 
 const emptyLobby: LobbyState = { status: 'ready', games: [] }
@@ -14,6 +14,7 @@ function renderHome(
     lobby: emptyLobby,
     onCreateGame: vi.fn(),
     onRetry: vi.fn(),
+    onJoin: vi.fn(),
     ...overrides,
   }
   render(<HomeScreen {...props} />)
@@ -121,15 +122,40 @@ describe('HomeScreen', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('shows rows that do nothing when clicked', async () => {
-    const { onCreateGame, onRetry } = renderHome({ lobby: twoGames })
+  it('offers to join a game with room', async () => {
+    const { onJoin } = renderHome({ lobby: twoGames })
+    const [row] = screen.getAllByRole('listitem')
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Join' }))
+
+    expect(onJoin).toHaveBeenCalledExactlyOnceWith('Partida 1')
+    expect(within(row).queryByText('Full')).not.toBeInTheDocument()
+  })
+
+  it('marks a full game and offers no way to join it', () => {
+    const full: GameSummary = {
+      ...twoGames.games[0],
+      name: 'Duel',
+      players: [
+        { name: 'Esteban', color: 'red' },
+        { name: 'Ana', color: 'blue' },
+      ],
+    }
+    renderHome({ lobby: { status: 'ready', games: [full] } })
+    const row = screen.getByRole('listitem')
+
+    expect(within(row).getByText('Full')).toBeInTheDocument()
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('does nothing when a row is clicked outside its button', async () => {
+    const { onCreateGame, onRetry, onJoin } = renderHome({ lobby: twoGames })
     const before = document.body.innerHTML
 
     await userEvent.click(screen.getByText('Partida 1'))
+    await userEvent.click(screen.getByText('12 x 10'))
 
-    const [row] = screen.getAllByRole('listitem')
-    expect(within(row).queryByRole('button')).not.toBeInTheDocument()
-    expect(within(row).queryByRole('link')).not.toBeInTheDocument()
+    expect(onJoin).not.toHaveBeenCalled()
     expect(onCreateGame).not.toHaveBeenCalled()
     expect(onRetry).not.toHaveBeenCalled()
     expect(document.body.innerHTML).toBe(before)

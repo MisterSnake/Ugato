@@ -111,3 +111,28 @@ def test_failed_subscriber_does_not_block_the_others_and_is_dropped() -> None:
     assert first.sent == [MESSAGE, MESSAGE]
     assert last.sent == [MESSAGE, MESSAGE]
     assert broken.attempts == 1
+
+
+def listed_order(registry: GameRegistry) -> list[str]:
+    return [game["name"] for game in lobby_snapshot(registry)["games"]]
+
+
+def fill(game: Game) -> None:
+    game.players.append(Player(name="Ana", color=Color.BLUE))
+
+
+def test_snapshot_lists_full_games_last_each_group_newest_first() -> None:
+    registry = GameRegistry()
+    older, newer = make_game("Partida 1"), make_game("Duel")
+    registry.add(older)
+    registry.add(newer)
+
+    fill(newer)
+    assert listed_order(registry) == ["Partida 1", "Duel"]
+
+    fill(older)
+    assert listed_order(registry) == ["Duel", "Partida 1"]
+
+    older.players.pop()
+    newer.players.pop()
+    assert listed_order(registry) == ["Duel", "Partida 1"]

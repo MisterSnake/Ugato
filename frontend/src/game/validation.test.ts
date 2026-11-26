@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateDraft } from './validation'
+import { validateDraft, validateJoinDraft } from './validation'
 import type { CreateGameDraft } from './validation'
 
 const validDraft: CreateGameDraft = {
@@ -78,5 +78,36 @@ describe('validateDraft', () => {
     expect(validate({ boardWidth, boardHeight })).toEqual({
       errors: { board: 'invalid_board' },
     })
+  })
+})
+
+describe('validateJoinDraft', () => {
+  const draft = { gameName: 'Partida 1', username: 'Ana', color: 'blue' }
+
+  it('returns the typed request with a trimmed username', () => {
+    expect(validateJoinDraft({ ...draft, username: '  Ana  ' })).toEqual({
+      request: draft,
+    })
+  })
+
+  it('rejects a short username', () => {
+    expect(validateJoinDraft({ ...draft, username: 'Al' })).toEqual({
+      errors: { username: 'invalid_username' },
+    })
+  })
+
+  it('rejects a missing color', () => {
+    expect(validateJoinDraft({ ...draft, color: '' })).toEqual({
+      errors: { color: 'invalid_color' },
+    })
+  })
+
+  it('reports the errors in the order the server checks them', () => {
+    const result = validateJoinDraft({ ...draft, username: 'Al', color: '' })
+
+    expect('errors' in result && Object.keys(result.errors)).toEqual([
+      'username',
+      'color',
+    ])
   })
 })

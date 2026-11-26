@@ -55,3 +55,19 @@ def test_removing_a_stale_game_keeps_the_new_owner_of_the_name() -> None:
     registry.add(make_game())
     registry.remove(stale)
     assert registry.exists_by_name("Partida 1")
+
+
+def test_find_by_name_ignores_case_and_surrounding_whitespace() -> None:
+    registry = GameRegistry()
+    game = make_game("Partida 1")
+    registry.add(game)
+    assert registry.find_by_name(" partida 1 ") is game
+    assert registry.find_by_name("Ghost") is None
+
+
+def test_removed_game_is_no_longer_found() -> None:
+    registry = GameRegistry()
+    game = make_game()
+    registry.add(game)
+    registry.remove(game)
+    assert registry.find_by_name("Partida 1") is None

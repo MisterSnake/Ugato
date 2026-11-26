@@ -1,6 +1,12 @@
 // Mirrors backend/app/games/validation.py. The server is the source of truth.
 import { COLORS } from './types'
-import type { Color, CreateGameRequest, ErrorCode, ErrorField } from './types'
+import type {
+  Color,
+  CreateGameRequest,
+  ErrorCode,
+  ErrorField,
+  JoinGameRequest,
+} from './types'
 
 export const NAME_MIN_LENGTH = 3
 export const NAME_MAX_LENGTH = 20
@@ -74,4 +80,24 @@ export function validateDraft(draft: CreateGameDraft): ValidationResult {
       boardHeight,
     },
   }
+}
+
+export type JoinGameDraft = Omit<JoinGameRequest, 'color'> & { color: string }
+
+export type JoinValidationResult =
+  | { request: JoinGameRequest }
+  | { errors: FieldErrors }
+
+// The game name is not checked: it comes from the lobby, and the server reports
+// a game that no longer exists.
+export function validateJoinDraft(draft: JoinGameDraft): JoinValidationResult {
+  const username = draft.username.trim()
+  const { gameName, color } = draft
+  const errors: FieldErrors = {}
+
+  if (!isValidName(username)) errors.username = 'invalid_username'
+  if (!isColor(color)) errors.color = 'invalid_color'
+
+  if (Object.keys(errors).length > 0 || !isColor(color)) return { errors }
+  return { request: { gameName, username, color } }
 }

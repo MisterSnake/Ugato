@@ -18,6 +18,14 @@ export interface CreateGameRequest {
   boardHeight: number
 }
 
+export interface JoinGameRequest {
+  gameName: string
+  username: string
+  color: Color
+}
+
+export type Role = 'host' | 'player'
+
 export interface Player {
   name: string
   color: Color
@@ -50,6 +58,10 @@ export type ErrorCode =
   | 'name_taken'
   | 'invalid_max_players'
   | 'invalid_board'
+  | 'game_not_found'
+  | 'game_full'
+  | 'username_taken'
+  | 'color_taken'
   | 'already_in_game'
   | 'invalid_message'
 
@@ -61,5 +73,9 @@ export interface ServerError {
 export type ServerMessage =
   | { type: 'game_created'; game: GameSummary }
   | { type: 'game_cancelled' }
+  | { type: 'game_joined'; game: GameSummary }
+  | { type: 'game_left' }
+  | { type: 'game_updated'; game: GameSummary }
+  | { type: 'game_closed' }
   | { type: 'games_list'; games: GameSummary[] }
   | ({ type: 'error' } & ServerError)

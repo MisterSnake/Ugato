@@ -381,3 +381,243 @@ describe('App after a page refresh', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
+
+const duel: GameSummary = {
+  name: 'Duel',
+  maxPlayers: 3,
+  boardWidth: 12,
+  boardHeight: 10,
+  players: [{ name: 'Esteban', color: 'red' }],
+}
+
+function withPlayers(
+  base: GameSummary,
+  ...players: GameSummary['players']
+): GameSummary {
+  return { ...base, players: [...base.players, ...players] }
+}
+
+const ana = { name: 'Ana', color: 'blue' } as const
+const luis = { name: 'Luis', color: 'green' } as const
+const duelWithAna = withPlayers(duel, ana)
+const fullDuel = withPlayers(duelWithAna, luis)
+
+const button = (name: string) => screen.getByRole('button', { name })
+
+async function openJoinForm() {
+  const app = renderLobby()
+  receiveGames(app.server, [duel])
+  await app.user.click(button('Join'))
+  return app
+}
+
+async function submitJoinForm() {
+  const app = await openJoinForm()
+  await app.user.type(screen.getByLabelText('Your name'), 'Ana')
+  await app.user.click(screen.getByRole('radio', { name: 'Blue' }))
+  await app.user.click(button('Join'))
+  return app
+}
+
+const joinFormTitle = () =>
+  screen.queryByRole('heading', { name: 'Join Duel' })
+
+describe('App joining a game', () => {
+  it('opens the join form without sending anything', async () => {
+    const { server } = await openJoinForm()
+
+    expect(joinFormTitle()).toBeInTheDocument()
+    expect(server.sent).toEqual([{ type: 'subscribe_lobby' }])
+  })
+
+  it('sends join_game over the same socket', async () => {
+    const socketCount = () => FakeWebSocket.instances.length
+    const { server } = await submitJoinForm()
+
+    expect(server.sent.slice(1)).toEqual([
+      { type: 'join_game', gameName: 'Duel', username: 'Ana', color: 'blue' },
+    ])
+    expect(FakeWebSocket.latest).toBe(server)
+    expect(socketCount()).toBeLessThanOrEqual(2)
+  })
+
+  it('shows the player waiting room once joined', async () => {
+    const { server } = await submitJoinForm()
+
+    receive(server, { type: 'game_joined', game: duelWithAna })
+    receiveGames(server, [duelWithAna])
+
+    expect(screen.getByText('Waiting for players...')).toBeInTheDocument()
+    expect(
+      screen.getAllByRole('button').map((element) => element.textContent),
+    ).toEqual(['Leave game'])
+    expect(window.sessionStorage.getItem('ugato.waitingGame')).toBe('player')
+  })
+
+  it('goes back to the lobby without sending anything', async () => {
+    const { server, user } = await openJoinForm()
+
+    await user.click(button('Back'))
+
+    expect(createGameButton()).toBeEnabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(server.sent).toEqual([{ type: 'subscribe_lobby' }])
+  })
+})
+
+const FULL_NOTICE = 'That game is full'
+const GONE_NOTICE = 'That game is no longer available'
+
+function expectLobbyWithNotice(notice: string) {
+  expect(createGameButton()).toBeInTheDocument()
+  expect(screen.getByRole('alert').textContent).toBe(notice)
+}
+
+describe('App join form', () => {
+  it.each([
+    ['fills up', [fullDuel], FULL_NOTICE],
+    ['disappears', [], GONE_NOTICE],
+  ])('returns to the lobby when the game %s', async (_, games, notice) => {
+    const { server } = await openJoinForm()
+
+    receiveGames(server, games)
+
+    expectLobbyWithNotice(notice)
+  })
+
+  it('disables a color as soon as the lobby reports it taken', async () => {
+    const { server, user } = await openJoinForm()
+    await user.click(screen.getByRole('radio', { name: 'Blue' }))
+
+    receiveGames(server, [duelWithAna])
+
+    expect(joinFormTitle()).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Blue' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: 'Blue' })).not.toBeChecked()
+  })
+
+  it.each([
+    ['game_full', FULL_NOTICE],
+    ['game_not_found', GONE_NOTICE],
+  ])('returns to the lobby on a %s error', async (code, notice) => {
+    const { server } = await submitJoinForm()
+
+    receive(server, { type: 'error', field: 'gameName', code })
+
+    expectLobbyWithNotice(notice)
+  })
+
+  it('stays on the form to show a taken username', async () => {
+    const { server } = await submitJoinForm()
+
+    receive(server, {
+      type: 'error',
+      field: 'username',
+      code: 'username_taken',
+    })
+
+    expect(joinFormTitle()).toBeInTheDocument()
+    expect(screen.getByLabelText('Your name')).toHaveValue('Ana')
+    expect(screen.getByLabelText('Your name')).toHaveAccessibleDescription(
+      'That name is already used in this game.',
+    )
+  })
+
+  it('ignores a late join error once the user is back on the lobby', async () => {
+    const { server, user } = await submitJoinForm()
+    await user.click(button('Back'))
+
+    receive(server, { type: 'error', field: 'color', code: 'color_taken' })
+
+    expect(createGameButton()).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('leaves for the disconnected lobby, with no notice', async () => {
+    const { server } = await openJoinForm()
+
+    act(() => server.simulateServerClose())
+
+    expectDisconnectedLobby()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+async function joinDuel() {
+  const app = await submitJoinForm()
+  receive(app.server, { type: 'game_joined', game: duelWithAna })
+  receiveGames(app.server, [duelWithAna])
+  return app
+}
+
+describe('App waiting room', () => {
+  it.each([
+    ['host', reachWaitingScreen, withPlayers(game, ana)],
+    ['player', joinDuel, fullDuel],
+  ])('updates the player list for a %s', async (_, reach, updated) => {
+    const { server } = await reach()
+    const before = screen.getAllByRole('listitem').length
+
+    receive(server, { type: 'game_updated', game: updated })
+
+    expect(screen.getAllByRole('listitem')).toHaveLength(before + 1)
+    expect(
+      screen.getByText(`${updated.players.length} / ${updated.maxPlayers}`),
+    ).toBeInTheDocument()
+  })
+
+  it('ignores a roster update when the user is not waiting', () => {
+    const { server } = renderLobby()
+
+    receive(server, { type: 'game_updated', game: duelWithAna })
+
+    expect(createGameButton()).toBeInTheDocument()
+  })
+
+  it('leaves the game over the same connection, with no notice', async () => {
+    const { server, user } = await joinDuel()
+    const socketCount = FakeWebSocket.instances.length
+
+    await user.click(button('Leave game'))
+
+    expect(server.sent.at(-1)).toEqual({ type: 'leave_game' })
+    expect(createGameButton()).toBeEnabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(server.closed).toBe(false)
+    expect(FakeWebSocket.instances).toHaveLength(socketCount)
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+
+  it('returns to the lobby when the host closes the game', async () => {
+    const { server } = await joinDuel()
+
+    receive(server, { type: 'game_closed' })
+
+    expectLobbyWithNotice('The host closed the game')
+    expect(createGameButton()).toBeEnabled()
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+})
+
+describe('App lost connection as a player', () => {
+  const PLAYER_NOTICE = 'Connection lost, you left the game'
+
+  it('shows that the player left the game', async () => {
+    const { server } = await joinDuel()
+
+    act(() => server.simulateServerClose())
+
+    expectDisconnectedLobby()
+    expect(screen.getByRole('alert').textContent).toBe(PLAYER_NOTICE)
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+
+  it('shows the notice once after a page refresh', async () => {
+    const refreshed = refresh(await joinDuel())
+
+    expect(screen.getByRole('alert').textContent).toBe(PLAYER_NOTICE)
+    refresh(refreshed)
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})

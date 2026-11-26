@@ -24,6 +24,9 @@ class GameRegistry:
     def list(self) -> builtins.list[Game]:
         return builtins.list(self._games.values())
 
+    def find_by_name(self, name: str) -> Game | None:
+        return self._games.get(self._key(name))
+
     def exists_by_name(self, name: str) -> bool:
         return self._key(name) in self._games
 

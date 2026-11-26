@@ -145,3 +145,75 @@ describe('createGameSocket', () => {
     expect(handler).toHaveBeenCalledExactlyOnceWith({ intentional: false })
   })
 })
+
+describe('createGameSocket joining and leaving', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+  })
+
+  const joinRequest = {
+    gameName: 'Partida 1',
+    username: 'Ana',
+    color: 'blue',
+  } as const
+
+  it('sends join_game once the socket opens', () => {
+    const { client, server } = connect()
+
+    client.joinGame(joinRequest)
+    expect(server.sent).toEqual([])
+    server.simulateOpen()
+
+    expect(server.sent).toEqual([{ type: 'join_game', ...joinRequest }])
+  })
+
+  it('sends leave_game and keeps the socket open', () => {
+    const { client, server } = connect()
+    server.simulateOpen()
+
+    client.leave()
+
+    expect(server.sent).toEqual([{ type: 'leave_game' }])
+    expect(server.closed).toBe(false)
+  })
+
+  it.each(['game_joined', 'game_updated'] as const)(
+    'passes %s to its handlers',
+    (event) => {
+      const { client, server } = connect()
+      const handler = vi.fn()
+      client.on(event, handler)
+
+      server.simulateMessage({ type: event, game })
+
+      expect(handler).toHaveBeenCalledExactlyOnceWith(game)
+    },
+  )
+
+  it('passes game_closed to its handlers', () => {
+    const { client, server } = connect()
+    const handler = vi.fn()
+    client.on('game_closed', handler)
+
+    server.simulateMessage({ type: 'game_closed' })
+
+    expect(handler).toHaveBeenCalledOnce()
+  })
+
+  it('passes a join error to the error handlers', () => {
+    const { client, server } = connect()
+    const handler = vi.fn()
+    client.on('error', handler)
+
+    server.simulateMessage({
+      type: 'error',
+      field: 'gameName',
+      code: 'game_full',
+    })
+
+    expect(handler).toHaveBeenCalledExactlyOnceWith({
+      field: 'gameName',
+      code: 'game_full',
+    })
+  })
+})

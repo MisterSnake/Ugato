@@ -2,6 +2,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from app.games.fanout import send_to_each
 from app.games.models import Game
 from app.games.registry import GameRegistry
 
@@ -19,11 +20,20 @@ def game_summary(game: Game) -> dict[str, Any]:
 
 
 def lobby_snapshot(registry: GameRegistry) -> dict[str, Any]:
-    """The `games_list` message, newest game first."""
+    """The `games_list` message: games with room first, then the full ones.
+
+    Each group goes from newest to oldest.
+    """
+    # The sort is stable, so each group keeps the newest-first order.
+    games = sorted(reversed(registry.list()), key=_is_full)
     return {
         "type": "games_list",
-        "games": [game_summary(game) for game in reversed(registry.list())],
+        "games": [game_summary(game) for game in games],
     }
+
+
+def _is_full(game: Game) -> bool:
+    return len(game.players) >= game.max_players
 
 
 class LobbyHub:
@@ -39,13 +49,8 @@ class LobbyHub:
         self._subscribers.discard(websocket)
 
     async def broadcast(self, message: dict[str, Any]) -> None:
-        # A copy, because connections can come and go while a send is awaited.
-        for websocket in list(self._subscribers):
-            try:
-                await websocket.send_json(message)
-            except Exception:
-                # Whatever broke this connection must not affect the others.
-                self.unsubscribe(websocket)
+        for websocket in await send_to_each(self._subscribers, message):
+            self.unsubscribe(websocket)
 
 
 _hub = LobbyHub()

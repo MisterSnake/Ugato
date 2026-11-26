@@ -73,3 +73,27 @@ def validate_create_request(payload: Mapping[str, Any]) -> Game:
         board_height=board_height,
         players=[Player(name=username, color=color)],
     )
+
+
+def validate_join_request(payload: Mapping[str, Any]) -> tuple[str, Player]:
+    """The requested game name and the player who wants to join it.
+
+    A bad game name is not rejected here: it becomes "", which matches no game.
+    """
+    username = normalize_name(payload.get("username"), "username", "invalid_username")
+    color = parse_color(payload.get("color"))
+    game_name = payload.get("gameName")
+    if not isinstance(game_name, str):
+        game_name = ""
+    return game_name, Player(name=username, color=color)
+
+
+def check_can_join(game: Game, player: Player) -> None:
+    if len(game.players) >= game.max_players:
+        raise ValidationError("gameName", "game_full")
+    # Both names are already trimmed by the name rules.
+    name = player.name.casefold()
+    if any(other.name.casefold() == name for other in game.players):
+        raise ValidationError("username", "username_taken")
+    if any(other.color == player.color for other in game.players):
+        raise ValidationError("color", "color_taken")

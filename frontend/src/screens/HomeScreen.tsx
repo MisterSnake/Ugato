@@ -1,9 +1,11 @@
+import { isFull } from '../game/isFull'
 import type { GameSummary, LobbyState } from '../game/types'
 import { colorLabel } from './colorLabel'
 
 interface HomeScreenProps {
   lobby: LobbyState
   onCreateGame: () => void
+  onJoin: (gameName: string) => void
   onRetry: () => void
   notice?: string
 }
@@ -11,6 +13,7 @@ interface HomeScreenProps {
 export function HomeScreen({
   lobby,
   onCreateGame,
+  onJoin,
   onRetry,
   notice,
 }: HomeScreenProps) {
@@ -30,15 +33,16 @@ export function HomeScreen({
         Create game
       </button>
       <h2>Open games</h2>
-      <OpenGames lobby={lobby} onRetry={onRetry} />
+      <OpenGames lobby={lobby} onJoin={onJoin} onRetry={onRetry} />
     </main>
   )
 }
 
 function OpenGames({
   lobby,
+  onJoin,
   onRetry,
-}: Pick<HomeScreenProps, 'lobby' | 'onRetry'>) {
+}: Pick<HomeScreenProps, 'lobby' | 'onJoin' | 'onRetry'>) {
   switch (lobby.status) {
     case 'connecting':
       return <p>Loading games...</p>
@@ -57,14 +61,20 @@ function OpenGames({
         <ul className="games">
           {lobby.games.map((game) => (
             // Open game names are unique, so they work as keys.
-            <GameRow key={game.name} game={game} />
+            <GameRow key={game.name} game={game} onJoin={onJoin} />
           ))}
         </ul>
       )
   }
 }
 
-function GameRow({ game }: { game: GameSummary }) {
+function GameRow({
+  game,
+  onJoin,
+}: {
+  game: GameSummary
+  onJoin: HomeScreenProps['onJoin']
+}) {
   const [host] = game.players
 
   return (
@@ -78,6 +88,13 @@ function GameRow({ game }: { game: GameSummary }) {
         <dt>Board</dt>
         <dd>{`${game.boardWidth} x ${game.boardHeight}`}</dd>
       </dl>
+      {isFull(game) ? (
+        <p className="full">Full</p>
+      ) : (
+        <button type="button" onClick={() => onJoin(game.name)}>
+          Join
+        </button>
+      )}
     </li>
   )
 }
