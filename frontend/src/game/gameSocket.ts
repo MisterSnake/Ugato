@@ -1,5 +1,7 @@
 import type {
   CreateGameRequest,
+  GameOver,
+  GameState,
   GameSummary,
   JoinGameRequest,
   ServerError,
@@ -24,6 +26,9 @@ export interface GameSocketEvents {
   game_joined: GameSummary
   game_updated: GameSummary
   game_closed: undefined
+  game_started: GameState
+  game_state: GameState
+  game_over: GameOver
   games_list: GameSummary[]
   error: ServerError
   close: { intentional: boolean }
@@ -39,6 +44,8 @@ export interface GameSocket {
   joinGame(request: JoinGameRequest): void
   cancel(): void
   leave(): void
+  markCell(row: number, col: number): void
+  chooseU(index: number): void
   close(): void
   on<E extends keyof GameSocketEvents>(
     event: E,
@@ -58,6 +65,9 @@ export function createGameSocket(
     game_joined: [],
     game_updated: [],
     game_closed: [],
+    game_started: [],
+    game_state: [],
+    game_over: [],
     games_list: [],
     error: [],
     close: [],
@@ -97,6 +107,14 @@ export function createGameSocket(
       message.type === 'game_updated'
     ) {
       emit(message.type, message.game)
+    } else if (
+      message.type === 'game_started' ||
+      message.type === 'game_state'
+    ) {
+      emit(message.type, message.state)
+    } else if (message.type === 'game_over') {
+      const { type: _type, ...gameOver } = message
+      emit('game_over', gameOver)
     } else if (message.type === 'game_closed') {
       emit('game_closed', undefined)
     } else if (message.type === 'games_list') {
@@ -127,6 +145,12 @@ export function createGameSocket(
     },
     leave() {
       send({ type: 'leave_game' })
+    },
+    markCell(row, col) {
+      send({ type: 'mark_cell', row, col })
+    },
+    chooseU(index) {
+      send({ type: 'choose_u', index })
     },
     close,
     on(event, handler) {

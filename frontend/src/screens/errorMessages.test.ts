@@ -9,3 +9,11 @@ describe('ERROR_MESSAGES', () => {
     )
   })
 })
+
+describe('ERROR_MESSAGES during play', () => {
+  it('says that a game has already started', () => {
+    expect(ERROR_MESSAGES.game_in_progress).toBe(
+      'That game has already started',
+    )
+  })
+})

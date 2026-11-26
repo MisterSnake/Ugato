@@ -6,15 +6,20 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
+from app.games.board import Cell
 from app.games.lobby import LobbyHub, get_lobby_hub
+from app.games.match import get_random
 from app.games.models import Color, Game, Player
 from app.games.registry import GameRegistry, get_registry
 from app.games.rooms import GameRooms, get_game_rooms
 from app.games.ws import ClientSession
 from app.main import app
+from tests.games.randomness import FixedOrder
 
 
 PROBE_REPLY = {"type": "error", "code": "invalid_message"}
+# The turn order of every game started through the `client` fixture.
+TURN_ORDER = FixedOrder("Ana", "Esteban", "Luis")
 
 
 @pytest.fixture
@@ -25,6 +30,7 @@ def registry() -> Iterator[GameRegistry]:
     app.dependency_overrides[get_lobby_hub] = lambda: fresh_hub
     fresh_rooms = GameRooms()
     app.dependency_overrides[get_game_rooms] = lambda: fresh_rooms
+    app.dependency_overrides[get_random] = lambda: TURN_ORDER
     yield fresh_registry
     app.dependency_overrides.clear()
 
@@ -63,6 +69,7 @@ def test_create_game_replies_with_summary_and_stores_game(
                 "maxPlayers": 2,
                 "boardWidth": 12,
                 "boardHeight": 10,
+                "status": "waiting",
                 "players": [{"name": "Esteban", "color": "red"}],
             },
         }
@@ -470,13 +477,14 @@ ANA = ("Ana", "blue")
 LUIS = ("Luis", "green")
 
 
-def partida(*players: tuple[str, str]) -> dict[str, Any]:
-    """The summary of the game made by `create_message(maxPlayers=3)`."""
+def partida(*players: tuple[str, str], max_players: int = 3) -> dict[str, Any]:
+    """The summary of the game made by `create_message(maxPlayers=max_players)`."""
     return {
         "name": "Partida 1",
-        "maxPlayers": 3,
+        "maxPlayers": max_players,
         "boardWidth": 12,
         "boardHeight": 10,
+        "status": "waiting",
         "players": [{"name": name, "color": color} for name, color in players],
     }
 
@@ -494,20 +502,20 @@ def test_joining_updates_the_joiner_the_room_and_the_lobby(
         client.websocket_connect("/api/ws") as ana,
         client.websocket_connect("/api/ws") as luis,
     ):
-        request(host, create_message(maxPlayers=3))
+        request(host, create_message(maxPlayers=4))
         subscribe(watcher)
 
         replies = request(ana, join_message(gameName=" partida 1 "))
 
-        assert replies == [{"type": "game_joined", "game": partida(HOST, ANA)}]
+        assert replies == [{"type": "game_joined", "game": partida(HOST, ANA, max_players=4)}]
         assert pending_messages(host) == [
-            {"type": "game_updated", "game": partida(HOST, ANA)}
+            {"type": "game_updated", "game": partida(HOST, ANA, max_players=4)}
         ]
-        assert pending_messages(watcher) == [listing(partida(HOST, ANA))]
+        assert pending_messages(watcher) == [listing(partida(HOST, ANA, max_players=4))]
 
         request(luis, join_message(username="Luis", color="green"))
 
-        updated = {"type": "game_updated", "game": partida(HOST, ANA, LUIS)}
+        updated = {"type": "game_updated", "game": partida(HOST, ANA, LUIS, max_players=4)}
         assert pending_messages(host) == [updated]
         assert pending_messages(ana) == [updated]
 
@@ -519,7 +527,7 @@ def test_subscribed_joiner_is_confirmed_before_receiving_the_new_list(
         client.websocket_connect("/api/ws") as host,
         client.websocket_connect("/api/ws") as ana,
     ):
-        request(host, create_message())
+        request(host, create_message(maxPlayers=3))
         subscribe(ana)
 
         replies = request(ana, join_message())
@@ -534,7 +542,7 @@ def test_subscribed_joiner_is_confirmed_before_receiving_the_new_list(
         ({"color": "pink"}, "color", "invalid_color"),
         ({"gameName": "Ghost"}, "gameName", "game_not_found"),
         ({"gameName": None}, "gameName", "game_not_found"),
-        ({"gameName": "Full house"}, "gameName", "game_full"),
+        ({"gameName": "Full house"}, "gameName", "game_in_progress"),
         ({"username": "esteban"}, "username", "username_taken"),
         ({"color": "red"}, "color", "color_taken"),
         ({"username": "Esteban", "color": "red"}, "username", "username_taken"),
@@ -617,7 +625,9 @@ def test_two_joins_racing_for_the_last_seat_admit_only_one() -> None:
         "error",
         "game_joined",
     ]
-    assert [r["code"] for r in first_replies if r["type"] == "error"] == ["game_full"]
+    assert [r["code"] for r in first_replies if r["type"] == "error"] == [
+        "game_in_progress"
+    ]
     assert len(registry.list()[0].players) == 2
 
 
@@ -831,7 +841,7 @@ def test_player_who_cannot_be_told_does_not_stop_the_others() -> None:
     )
 
     async def join_then_cancel() -> None:
-        await host.handle(create_message(maxPlayers=3))
+        await host.handle(create_message(maxPlayers=4))
         await ana.handle(join_message())
         await luis.handle(join_message(username="Luis", color="green"))
         hub.subscribe(watcher)
@@ -841,3 +851,569 @@ def test_player_who_cannot_be_told_does_not_stop_the_others() -> None:
 
     assert luis_socket.sent[-1] == GAME_CLOSED
     assert watcher.sent == [listing()]
+
+
+def empty_state(*order: str) -> dict[str, Any]:
+    """The state of a 12 x 10 game that has just started."""
+    return {
+        "board": [[None] * 12 for _ in range(10)],
+        "turnOrder": list(order),
+        "currentPlayer": order[0],
+        "phase": "mark",
+        "scores": dict.fromkeys(order, 0),
+        "leftPlayers": [],
+        "lastMove": None,
+    }
+
+
+def types_of(messages: list[Any]) -> list[str]:
+    return [message["type"] for message in messages]
+
+
+def test_taking_the_last_seat_starts_the_game(client: TestClient) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as watcher,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        request(host, create_message())
+        subscribe(watcher)
+
+        joiner_replies = request(ana, join_message())
+        host_messages = pending_messages(host)
+
+        assert types_of(joiner_replies) == ["game_joined", "game_started"]
+        assert types_of(host_messages) == ["game_updated", "game_started"]
+        started = {"type": "game_started", "state": empty_state("Ana", "Esteban")}
+        assert joiner_replies[1] == started
+        assert host_messages[1] == started
+        (listed,) = pending_messages(watcher)
+        assert [game["status"] for game in listed["games"]] == ["playing"]
+
+
+def test_a_game_with_room_does_not_start(client: TestClient) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        request(host, create_message(maxPlayers=3))
+
+        assert types_of(request(ana, join_message())) == ["game_joined"]
+        assert types_of(pending_messages(host)) == ["game_updated"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"username": "Esteban"}, {"color": "red"}],
+)
+def test_a_game_in_progress_cannot_be_joined(
+    client: TestClient, registry: GameRegistry, overrides: dict[str, Any]
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as watcher,
+        client.websocket_connect("/api/ws") as late,
+    ):
+        request(host, create_message())
+        request(ana, join_message())
+        subscribe(watcher)
+
+        message = join_message(**{"username": "Luis", "color": "green"} | overrides)
+
+        assert request(late, message) == [
+            {"type": "error", "field": "gameName", "code": "game_in_progress"}
+        ]
+        assert pending_messages(watcher) == []
+        assert [len(game.players) for game in registry.list()] == [2]
+
+
+def mark(row: object, col: object) -> dict[str, Any]:
+    return {"type": "mark_cell", "row": row, "col": col}
+
+
+def start_duel(
+    host: WebSocketTestSession, ana: WebSocketTestSession, **settings: Any
+) -> None:
+    """Start a two-player game, where "Ana" moves first, and read its messages."""
+    request(host, create_message(**settings))
+    request(ana, join_message())
+    pending_messages(host)
+
+
+def only_state(socket: WebSocketTestSession) -> dict[str, Any]:
+    (message,) = pending_messages(socket)
+    assert message["type"] == "game_state"
+    return message["state"]
+
+
+def make_move(
+    mover: WebSocketTestSession,
+    others: list[WebSocketTestSession],
+    message: dict[str, Any],
+) -> None:
+    """Make an accepted move and read the state each player receives."""
+    mover.send_json(message)
+    for socket in (mover, *others):
+        only_state(socket)
+
+
+def play(
+    first: WebSocketTestSession,
+    second: WebSocketTestSession,
+    first_cells: list[tuple[int, int]],
+    second_cells: list[tuple[int, int]],
+) -> None:
+    """Let two players mark in turns."""
+    for first_cell, second_cell in zip(first_cells, second_cells, strict=True):
+        make_move(first, [second], mark(*first_cell))
+        make_move(second, [first], mark(*second_cell))
+
+
+def prepare_two_us(host: WebSocketTestSession, ana: WebSocketTestSession) -> None:
+    """Leave "Ana" one mark, at (1, 2), away from completing two Us."""
+    start_duel(host, ana)
+    play(
+        ana,
+        host,
+        [(0, 0), (0, 2), (0, 4), (1, 0), (1, 1), (1, 3), (1, 4)],
+        # A single row can never form a U.
+        [(9, col) for col in range(7)],
+    )
+
+
+def test_a_mark_is_sent_to_every_player(client: TestClient) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        start_duel(host, ana)
+        subscribe(watcher)
+
+        ana.send_json(mark(2, 3))
+
+        for socket in (ana, host):
+            state = only_state(socket)
+            assert state["board"][2][3] == {"owner": "Ana", "disabled": False}
+            assert state["currentPlayer"] == "Esteban"
+            assert state["lastMove"] == {"row": 2, "col": 3}
+        assert pending_messages(watcher) == []
+
+
+def test_only_the_chooser_receives_the_candidates(client: TestClient) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        prepare_two_us(host, ana)
+
+        ana.send_json(mark(1, 2))
+
+        chooser, other = only_state(ana), only_state(host)
+        assert chooser["phase"] == other["phase"] == "choose"
+        assert len(chooser["candidates"]) == 2
+        assert "candidates" not in other
+
+
+@pytest.mark.parametrize(
+    ("sender", "message", "code"),
+    [
+        ("host", mark(0, 0), "not_your_turn"),
+        ("ana", mark(10, 0), "cell_out_of_bounds"),
+        ("ana", {"type": "mark_cell"}, "cell_out_of_bounds"),
+        ("ana", mark(9, 0), "cell_taken"),
+    ],
+)
+def test_a_rejected_mark_is_only_reported_to_its_sender(
+    client: TestClient, sender: str, message: dict[str, Any], code: str
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_duel(host, ana)
+        play(ana, host, [(0, 0)], [(9, 0)])
+        sockets = {"host": host, "ana": ana}
+
+        assert request(sockets.pop(sender), message) == [
+            {"type": "error", "code": code}
+        ]
+        (other,) = sockets.values()
+        assert pending_messages(other) == []
+
+
+def test_a_mark_during_a_choice_is_rejected_over_the_socket(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        prepare_two_us(host, ana)
+        make_move(ana, [host], mark(1, 2))
+
+        assert request(ana, mark(5, 5)) == [
+            {"type": "error", "code": "choice_pending"}
+        ]
+        assert pending_messages(host) == []
+
+
+NOT_STARTED = {"type": "error", "code": "game_not_started"}
+
+
+def assert_not_started(client: TestClient, message: dict[str, Any]) -> None:
+    """The move is rejected in a waiting room and outside any game."""
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as stranger,
+    ):
+        request(host, create_message(maxPlayers=3))
+        request(ana, join_message())
+        pending_messages(host)
+
+        for socket in (host, ana, stranger):
+            assert request(socket, message) == [NOT_STARTED]
+
+
+def test_a_mark_without_a_started_game_is_rejected(client: TestClient) -> None:
+    assert_not_started(client, mark(0, 0))
+
+
+class StallingSocket(RecordingSocket):
+    """Holds back its first `game_state` until it is released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stalled = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send_json(self, message: Any) -> None:
+        if message["type"] == "game_state" and not self.stalled.is_set():
+            self.stalled.set()
+            await self.release.wait()
+        await super().send_json(message)
+
+
+def current_players(socket: RecordingSocket) -> list[str]:
+    return [
+        message["state"]["currentPlayer"]
+        for message in socket.sent
+        if message["type"] == "game_state"
+    ]
+
+
+def test_a_slow_connection_does_not_reorder_the_states_of_the_others() -> None:
+    async def scenario() -> list[str]:
+        registry, hub, rooms = GameRegistry(), LobbyHub(), GameRooms()
+        slow, last = StallingSocket(), RecordingSocket()
+        # "Ana" is served between the host and "Luis", who is served last.
+        host, ana, luis = (
+            ClientSession(socket, registry, hub, rooms, TURN_ORDER)
+            for socket in (RecordingSocket(), slow, last)
+        )
+        await host.handle(create_message(maxPlayers=3))
+        await ana.handle(join_message())
+        await luis.handle(join_message(username="Luis", color="green"))
+
+        # The turn order is Ana, Esteban, Luis.
+        first = asyncio.create_task(ana.handle(mark(0, 0)))
+        await asyncio.wait_for(slow.stalled.wait(), timeout=5)
+        second = asyncio.create_task(host.handle(mark(5, 5)))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        slow.release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+        return current_players(last)
+
+    assert asyncio.run(scenario()) == ["Esteban", "Luis"]
+
+
+def choose(index: object) -> dict[str, Any]:
+    return {"type": "choose_u", "index": index}
+
+
+def test_a_choice_is_sent_to_every_player(client: TestClient) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        prepare_two_us(host, ana)
+        make_move(ana, [host], mark(1, 2))
+
+        ana.send_json(choose(1))
+
+        for socket in (ana, host):
+            state = only_state(socket)
+            assert state["scores"] == {"Ana": 1, "Esteban": 0}
+            assert (state["phase"], state["currentPlayer"]) == ("mark", "Esteban")
+
+
+@pytest.mark.parametrize(
+    ("choosing", "sender", "message", "code"),
+    [
+        (False, "ana", choose(0), "no_choice_pending"),
+        (True, "ana", choose(2), "invalid_choice"),
+        (True, "ana", {"type": "choose_u"}, "invalid_choice"),
+        (True, "host", choose(0), "not_your_turn"),
+    ],
+)
+def test_a_rejected_choice_is_only_reported_to_its_sender(
+    client: TestClient,
+    choosing: bool,
+    sender: str,
+    message: dict[str, Any],
+    code: str,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        prepare_two_us(host, ana)
+        if choosing:
+            make_move(ana, [host], mark(1, 2))
+        sockets = {"host": host, "ana": ana}
+
+        assert request(sockets.pop(sender), message) == [
+            {"type": "error", "code": code}
+        ]
+        (other,) = sockets.values()
+        assert pending_messages(other) == []
+
+
+def test_a_choice_without_a_started_game_is_rejected(client: TestClient) -> None:
+    assert_not_started(client, choose(0))
+
+
+LUIS_JOINS = {"username": "Luis", "color": "green"}
+
+
+def start_trio(
+    host: WebSocketTestSession,
+    ana: WebSocketTestSession,
+    luis: WebSocketTestSession,
+) -> None:
+    """Start a three-player game. The turn order is Ana, Esteban, Luis."""
+    request(host, create_message(maxPlayers=3))
+    request(ana, join_message())
+    request(luis, join_message(**LUIS_JOINS))
+    for socket in (host, ana):
+        pending_messages(socket)
+
+
+def test_leaving_during_play_updates_the_others_and_the_lobby(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        start_trio(host, ana, luis)
+        subscribe(watcher)
+
+        assert request(luis, LEAVE) == [GAME_LEFT]
+
+        for socket in (host, ana):
+            assert only_state(socket)["leftPlayers"] == ["Luis"]
+        assert pending_messages(watcher) == [
+            listing(partida(HOST, ANA) | {"status": "playing"})
+        ]
+        # The one who left is no longer in any game.
+        assert request(luis, mark(0, 0)) == [NOT_STARTED]
+        assert request(luis, create_message(gameName="Duel"))[0]["type"] == (
+            "game_created"
+        )
+
+
+def test_a_subscribed_leaver_is_confirmed_before_the_new_list(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_trio(host, ana, luis)
+        subscribe(luis)
+
+        assert types_of(request(luis, LEAVE)) == ["game_left", "games_list"]
+
+
+def test_the_host_disconnecting_during_play_does_not_close_the_game(
+    client: TestClient, registry: GameRegistry
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        start_trio(host, ana, luis)
+        subscribe(watcher)
+
+        disconnect(host)
+
+        # The only message is the state: no `game_closed`.
+        for socket in (ana, luis):
+            assert only_state(socket)["leftPlayers"] == ["Esteban"]
+        assert pending_messages(watcher) == [
+            listing(partida(ANA, LUIS) | {"status": "playing"})
+        ]
+        assert [game.name for game in registry.list()] == ["Partida 1"]
+        make_move(ana, [luis], mark(0, 0))
+
+
+def test_the_host_cancelling_during_play_changes_nothing(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        start_duel(host, ana)
+        subscribe(watcher)
+
+        assert request(host, {"type": "cancel_game"}) == [GAME_CANCELLED]
+
+        assert pending_messages(ana) == []
+        assert pending_messages(watcher) == []
+        # The host is still playing.
+        assert request(host, create_message(gameName="Duel")) == [ALREADY_IN_GAME]
+        make_move(ana, [host], mark(0, 0))
+        make_move(host, [ana], mark(0, 1))
+
+
+def test_a_player_who_left_can_join_another_game(client: TestClient) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+        client.websocket_connect("/api/ws") as other_host,
+    ):
+        start_trio(host, ana, luis)
+        request(host, LEAVE)
+        request(other_host, create_message(gameName="Duel", maxPlayers=3))
+
+        assert request(host, join_message(gameName="Duel"))[0]["type"] == (
+            "game_joined"
+        )
+
+
+def test_the_turn_passes_when_its_player_leaves_during_play(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_trio(host, ana, luis)
+
+        request(ana, LEAVE)
+
+        for socket in (host, luis):
+            assert only_state(socket)["currentPlayer"] == "Esteban"
+
+
+def test_a_choice_is_dropped_when_its_player_disconnects(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_trio(host, ana, luis)
+        cells = [(0, 0), (0, 2), (0, 4), (1, 0), (1, 1), (1, 3), (1, 4)]
+        for col, cell in enumerate(cells):
+            make_move(ana, [host, luis], mark(*cell))
+            # Single rows can never form a U.
+            make_move(host, [ana, luis], mark(9, col))
+            make_move(luis, [ana, host], mark(7, col))
+        make_move(ana, [host, luis], mark(1, 2))
+
+        disconnect(ana)
+
+        for socket in (host, luis):
+            state = only_state(socket)
+            assert (state["phase"], state["currentPlayer"]) == ("mark", "Esteban")
+            assert state["scores"]["Ana"] == 0
+            assert not any(cell and cell["disabled"] for cell in sum(state["board"], []))
+
+
+def leave_one_cell_empty(registry: GameRegistry, scores: dict[str, int]) -> None:
+    """Fill the board of the only game, except its last cell, and set the scores."""
+    match = registry.list()[0].match
+    # Disabled cells take no part in any U.
+    match.board = [[Cell("Esteban", disabled=True)] * 12 for _ in range(10)]
+    match.board[9][11] = None
+    match.scores.update(scores)
+
+
+def assert_free_after_game_over(
+    client: TestClient, player: WebSocketTestSession
+) -> None:
+    assert request(player, mark(0, 0)) == [NOT_STARTED]
+    assert request(player, create_message(maxPlayers=3))[0]["type"] == "game_created"
+
+
+def test_filling_the_board_ends_and_removes_the_game(
+    client: TestClient, registry: GameRegistry
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        start_duel(host, ana)
+        leave_one_cell_empty(registry, {"Esteban": 4, "Ana": 2})
+        subscribe(watcher)
+
+        ana_messages = request(ana, mark(9, 11))
+        host_messages = pending_messages(host)
+
+        # The last move is reported like any other, then the end.
+        for messages in (ana_messages, host_messages):
+            assert types_of(messages) == ["game_state", "game_over"]
+        over = host_messages[1]
+        assert over == ana_messages[1]
+        assert over["winners"] == ["Esteban"]
+        assert over["reason"] == "board_full"
+        assert over["scores"] == {"Esteban": 4, "Ana": 2}
+        assert over["board"] == host_messages[0]["state"]["board"]
+        assert registry.list() == []
+        assert pending_messages(watcher) == [listing()]
+        # The name can be used again, and both players are free.
+        assert_free_after_game_over(client, ana)
+        assert request(host, join_message(username="Pia", color="green"))[0][
+            "type"
+        ] == "game_joined"
+
+
+@pytest.mark.parametrize("disconnects", [False, True])
+def test_the_last_player_left_wins_and_the_game_is_removed(
+    client: TestClient, registry: GameRegistry, disconnects: bool
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        start_duel(host, ana)
+        subscribe(watcher)
+
+        if disconnects:
+            disconnect(ana)
+        else:
+            assert request(ana, LEAVE) == [GAME_LEFT]
+
+        (over,) = pending_messages(host)
+        assert over["type"] == "game_over"
+        assert (over["winners"], over["reason"]) == (["Esteban"], "last_player")
+        assert registry.list() == []
+        assert pending_messages(watcher) == [listing()]
+        assert_free_after_game_over(client, host)

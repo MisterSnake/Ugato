@@ -127,7 +127,7 @@ button:disabled {
   }
 
   button,
-  .full {
+  .in-progress {
     margin: 0.5rem 0 0;
   }
 }
@@ -157,5 +157,183 @@ dd {
   margin: 0;
   padding: 0;
   list-style: none;
+  overflow-wrap: anywhere;
+}
+
+/* Player colors. Whatever has one of these classes can use var(--player). */
+.color-red {
+  --player: #d32f2f;
+}
+
+.color-blue {
+  --player: #1976d2;
+}
+
+.color-yellow {
+  --player: #fbc02d;
+}
+
+.color-green {
+  --player: #388e3c;
+}
+
+.color-orange {
+  --player: #f57c00;
+}
+
+.color-purple {
+  --player: #7b1fa2;
+}
+
+.swatch {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.4em;
+  border: 1px solid #1a1a1a;
+  background: var(--player);
+}
+
+/* The game fills the screen, and only the board area grows. */
+.game {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  box-sizing: border-box;
+  height: 100dvh;
+  padding: 0.5rem;
+  overflow: hidden;
+}
+
+.turn-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  align-content: center;
+  gap: 0.25rem 1rem;
+  box-sizing: border-box;
+  align-self: stretch;
+  /* Room for the buttons, so showing them does not resize the board. */
+  min-height: 6.5rem;
+  border-bottom: 4px solid var(--player);
+
+  p {
+    margin: 0;
+  }
+
+  .turn-text {
+    color: var(--text-h);
+    font-size: 1.2rem;
+  }
+
+  &.mine {
+    background: color-mix(in srgb, var(--player) 20%, transparent);
+
+    .turn-text {
+      font-size: 1.6rem;
+      font-weight: 700;
+    }
+  }
+}
+
+.board-area {
+  --empty-cell: #d9d6cd;
+
+  position: relative;
+  align-self: stretch;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 4px solid transparent;
+  /* The browser must not pan or zoom the page: the board does. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+
+  &.my-turn {
+    border-color: var(--player);
+  }
+}
+
+.board {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  grid-auto-rows: 32px;
+  transform-origin: 0 0;
+}
+
+.cell {
+  position: relative;
+  box-sizing: border-box;
+  /* --hairline is one screen pixel, set by the board according to the zoom. */
+  border: calc(var(--hairline) / 2) solid #8f8b80;
+  background-color: var(--empty-cell);
+
+  &.taken,
+  &.disabled,
+  &.left,
+  &.left-disabled {
+    border: var(--hairline) solid #1a1a1a;
+    background-color: var(--player);
+  }
+
+  &.disabled,
+  &.left-disabled {
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgb(0 0 0 / 55%) 0 4px,
+      transparent 4px 9px
+    );
+  }
+
+  &.left,
+  &.left-disabled {
+    opacity: 0.35;
+  }
+
+  &.last-move::after {
+    content: '';
+    position: absolute;
+    inset: 34%;
+    border: var(--hairline) solid #1a1a1a;
+    border-radius: 50%;
+    background: #fff;
+  }
+
+  /* A double ring shows on every player color. */
+  &.selected,
+  &.candidate {
+    box-shadow:
+      inset 0 0 0 calc(2 * var(--hairline)) #111,
+      inset 0 0 0 calc(5 * var(--hairline)) #fff;
+  }
+
+  &.dimmed {
+    filter: brightness(0.55);
+  }
+}
+
+.zoom,
+.scores {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem 1rem;
+}
+
+.zoom button {
+  min-width: 3rem;
+}
+
+.scores {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-h);
   overflow-wrap: anywhere;
 }

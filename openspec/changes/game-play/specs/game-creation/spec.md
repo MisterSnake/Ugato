@@ -10,6 +10,14 @@ When `game_started` arrives while the host is on the waiting screen, the client 
 - **WHEN** `game_started` arrives
 - **THEN** the user sees the game screen and no "Cancel game" button
 
+### Requirement: Cancel that arrives after the start
+The server can start a game before it reads the host's `cancel_game`. If `game_started` arrives after the host cancelled, the client SHALL send `leave_game` and keep the user where they are.
+
+#### Scenario: Cancel crosses the start
+- **GIVEN** the host clicked "Cancel game" and is on the lobby
+- **WHEN** `game_started` arrives for the cancelled game
+- **THEN** the client sends `leave_game` once, and the user stays on the lobby with no notice
+
 ## MODIFIED Requirements
 
 ### Requirement: One game per connection

@@ -1,9 +1,11 @@
 import asyncio
 from typing import Any
 
-from app.games.lobby import LobbyHub, get_lobby_hub, lobby_snapshot
+from app.games.lobby import LobbyHub, game_summary, get_lobby_hub, lobby_snapshot
+from app.games.match import Match
 from app.games.models import Color, Game, Player
 from app.games.registry import GameRegistry
+from tests.games.randomness import FixedOrder
 
 
 def make_game(name: str) -> Game:
@@ -19,6 +21,7 @@ def make_game(name: str) -> Game:
 def summary(name: str) -> dict[str, object]:
     return {
         "name": name,
+        "status": "waiting",
         "maxPlayers": 2,
         "boardWidth": 12,
         "boardHeight": 10,
@@ -113,26 +116,65 @@ def test_failed_subscriber_does_not_block_the_others_and_is_dropped() -> None:
     assert broken.attempts == 1
 
 
+def test_a_game_that_has_not_started_is_waiting() -> None:
+    assert game_summary(make_game("Partida 1"))["status"] == "waiting"
+
+
+def start(game: Game) -> None:
+    game.players.append(Player(name="Ana", color=Color.BLUE))
+    names = [player.name for player in game.players]
+    game.match = Match(
+        names, game.board_width, game.board_height, FixedOrder(*reversed(names))
+    )
+
+
+def test_a_started_game_lists_only_the_players_still_in_it() -> None:
+    game = make_game("Partida 1")
+    game.players.append(Player(name="Luis", color=Color.GREEN))
+    start(game)
+
+    game.match.leave("Esteban")
+
+    summary_ = game_summary(game)
+    assert summary_["status"] == "playing"
+    # In join order, whatever the turn order is.
+    assert summary_["players"] == [
+        {"name": "Luis", "color": "green"},
+        {"name": "Ana", "color": "blue"},
+    ]
+
+
 def listed_order(registry: GameRegistry) -> list[str]:
     return [game["name"] for game in lobby_snapshot(registry)["games"]]
 
 
-def fill(game: Game) -> None:
-    game.players.append(Player(name="Ana", color=Color.BLUE))
-
-
-def test_snapshot_lists_full_games_last_each_group_newest_first() -> None:
+def two_games() -> tuple[GameRegistry, Game, Game]:
+    """A registry where "Partida 1" was created before "Duel"."""
     registry = GameRegistry()
     older, newer = make_game("Partida 1"), make_game("Duel")
     registry.add(older)
     registry.add(newer)
+    return registry, older, newer
 
-    fill(newer)
-    assert listed_order(registry) == ["Partida 1", "Duel"]
 
-    fill(older)
+def test_waiting_games_are_ordered_by_creation() -> None:
+    registry, _, _ = two_games()
+
     assert listed_order(registry) == ["Duel", "Partida 1"]
 
-    older.players.pop()
-    newer.players.pop()
+
+def test_games_in_progress_are_listed_last() -> None:
+    registry, _, newer = two_games()
+
+    start(newer)
+
+    assert listed_order(registry) == ["Partida 1", "Duel"]
+
+
+def test_games_in_progress_are_listed_newest_first() -> None:
+    registry, older, newer = two_games()
+
+    start(older)
+    start(newer)
+
     assert listed_order(registry) == ["Duel", "Partida 1"]

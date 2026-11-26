@@ -17,6 +17,7 @@ const game: GameSummary = {
   maxPlayers: 2,
   boardWidth: 12,
   boardHeight: 10,
+  status: 'waiting',
   players: [{ name: 'Esteban', color: 'red' }],
 }
 
@@ -215,5 +216,55 @@ describe('createGameSocket joining and leaving', () => {
       field: 'gameName',
       code: 'game_full',
     })
+  })
+})
+
+describe('createGameSocket playing', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+  })
+
+  it('sends mark_cell and choose_u, queued until the socket opens', () => {
+    const { client, server } = connect()
+
+    client.markCell(2, 3)
+    client.chooseU(1)
+    expect(server.sent).toEqual([])
+    server.simulateOpen()
+
+    expect(server.sent).toEqual([
+      { type: 'mark_cell', row: 2, col: 3 },
+      { type: 'choose_u', index: 1 },
+    ])
+  })
+
+  it.each(['game_started', 'game_state'] as const)(
+    'passes the state of %s to its handlers',
+    (event) => {
+      const { client, server } = connect()
+      const handler = vi.fn()
+      client.on(event, handler)
+      const state = { currentPlayer: 'Ana' }
+
+      server.simulateMessage({ type: event, state })
+
+      expect(handler).toHaveBeenCalledExactlyOnceWith(state)
+    },
+  )
+
+  it('passes game_over to its handlers', () => {
+    const { client, server } = connect()
+    const handler = vi.fn()
+    client.on('game_over', handler)
+    const over = {
+      winners: ['Ana'],
+      scores: { Ana: 1 },
+      reason: 'board_full',
+      board: [[null]],
+    }
+
+    server.simulateMessage({ type: 'game_over', ...over })
+
+    expect(handler).toHaveBeenCalledExactlyOnceWith(over)
   })
 })

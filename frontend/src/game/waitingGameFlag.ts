@@ -1,5 +1,6 @@
-// Remembers, across a page refresh, that this tab was waiting in a game, and in
-// which role. sessionStorage is per tab; no username or game data is stored.
+// Remembers, across a page refresh, that this tab was in a game: waiting in it,
+// in a given role, or playing it, which counts as the player role.
+// sessionStorage is per tab; no username or game data is stored.
 import type { Role } from './types'
 
 const KEY = 'ugato.waitingGame'

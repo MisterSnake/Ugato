@@ -53,6 +53,15 @@ def test_removing_a_player_drops_them() -> None:
     assert rooms.members(game) == [host, luis]
 
 
+def test_seats_pair_each_connection_with_its_player() -> None:
+    rooms, game = GameRooms(), make_game()
+    host, ana = StandInSession(), StandInSession()
+    rooms.open(game, host)
+    rooms.add(game, ana, ANA)
+
+    assert rooms.seats(game) == [(host, game.players[0]), (ana, ANA)]
+
+
 def test_get_game_rooms_returns_one_shared_store() -> None:
     assert get_game_rooms() is get_game_rooms()
 
@@ -77,3 +86,29 @@ def test_closing_a_stale_game_keeps_the_room_of_the_reused_name() -> None:
     assert rooms.close(stale) == []
     assert rooms.members(current) == [host]
     assert rooms.members(stale) == []
+
+
+def test_dropping_a_connection_keeps_its_player_in_the_game() -> None:
+    rooms, game = GameRooms(), make_game()
+    host, ana, luis = StandInSession(), StandInSession(), StandInSession()
+    rooms.open(game, host)
+    rooms.add(game, ana, ANA)
+    rooms.add(game, luis, LUIS)
+
+    rooms.drop(game, ana)
+
+    assert rooms.members(game) == [host, luis]
+    assert [player.name for player in game.players] == ["Esteban", "Ana", "Luis"]
+
+
+def test_the_host_can_be_dropped() -> None:
+    rooms, game = GameRooms(), make_game()
+    host, ana = StandInSession(), StandInSession()
+    rooms.open(game, host)
+    rooms.add(game, ana, ANA)
+
+    rooms.drop(game, host)
+
+    assert rooms.members(game) == [ana]
+    assert rooms.seats(game) == [(ana, ANA)]
+    assert rooms.close(game) == [ana]

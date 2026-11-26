@@ -29,25 +29,54 @@ game names would no longer be unique. A restart removes every game.
 Messages are JSON objects sent as text frames. A connection can be in at most
 one game at a time, either as its host (the creator) or as a joined player.
 
-A game lives only while its host's connection is open: cancelling or
-disconnecting (refresh, tab close, network loss) removes it, frees its name and
-sends `game_closed` to every joined player. A joined player leaves with
-`leave_game` or by disconnecting, which frees their name and color in that game.
-`cancel_game`, `leave_game` and `game_closed` all leave the connection open, so
-the same connection can then create or join another game.
+A game is `waiting` until its last seat is taken, and then `playing`.
 
-Whenever a player joins or leaves, every other connection in that game, host
-included, receives `game_updated`. The one that joined gets `game_joined`
-instead, and the one that left with `leave_game` gets `game_left`.
+**Before the start**, a game lives only while its host's connection is open:
+cancelling or disconnecting (refresh, tab close, network loss) removes it, frees
+its name and sends `game_closed` to every joined player. A joined player leaves
+with `leave_game` or by disconnecting, which frees their name and color in that
+game. `cancel_game`, `leave_game` and `game_closed` all leave the connection
+open, so the same connection can then create or join another game. Whenever a
+player joins or leaves, every other connection in that game, host included,
+receives `game_updated`. The one that joined gets `game_joined` instead, and the
+one that left with `leave_game` gets `game_left`.
+
+**After the start, the host has no special role.** The host plays like everyone
+else, so their leaving or disconnecting does not close the game, and
+`cancel_game` changes nothing (it is still answered with `game_cancelled`). See
+[Playing a game](#playing-a-game).
 
 A connection that sends `subscribe_lobby` receives a `games_list` right away, and
-a new one whenever a game is created, cancelled or removed by a disconnect, and
-whenever a player joins or leaves one. Each `games_list` is the full list, not a
+a new one whenever a game is created, cancelled, removed by a disconnect before
+its start, started or ended, and whenever a player joins or leaves one,
+including during play. Each `games_list` is the full list, not a
 change to the previous one. The subscription lasts until the connection closes,
 including while the connection is in a game. Subscribing again only sends a
 fresh list. When the connection that acted is subscribed, its confirmation
 (`game_created`, `game_cancelled`, `game_joined` or `game_left`) arrives before
 the updated list.
+
+### Playing a game
+
+- **Start**: when the last seat is taken, the server shuffles the players into a
+  turn order and sends `game_started` to all of them. Messages go out in this
+  order: `game_joined` to the joiner, `game_updated` to the others,
+  `game_started` to everyone, and then the new `games_list`.
+- **Turns**: the current player marks an empty cell with `mark_cell`. Every
+  accepted `mark_cell` or `choose_u` sends `game_state` to every player still in
+  the game.
+- **Scoring**: a U is 5 enabled cells of one player in the U pentomino shape,
+  opening to any of four sides; the notch is ignored. A mark that completes one U
+  scores it and disables its cells. A mark that completes several keeps the turn,
+  in the `choose` phase, until the player picks one with `choose_u`.
+- **Leaving**: `leave_game` or a disconnect removes the player from the turn
+  order. Their cells and score stay, but they cannot win. If they had the turn it
+  passes, and a pending choice scores nothing. The others get `game_state`, or
+  just `game_over` if only one of them is left.
+- **End**: when no cell is empty after a turn (`board_full`), the remaining
+  players with the highest score win; the `game_state` of that last move arrives
+  first. When one player is left (`last_player`), they win. The server sends
+  `game_over`, removes the game, and frees its name and its connections.
 
 ### Client to server
 
@@ -55,9 +84,11 @@ the updated list.
 |---|---|
 | `subscribe_lobby` | none |
 | `create_game` | `username`, `color`, `gameName`, `maxPlayers` (optional, default 2), `boardWidth`, `boardHeight` |
-| `cancel_game` | none. Only a host's game is cancelled. |
+| `cancel_game` | none. Only a host's game that has not started is cancelled. |
 | `join_game` | `gameName` (matched ignoring case and surrounding whitespace), `username`, `color` |
-| `leave_game` | none. Only a joined player leaves; a host uses `cancel_game`. |
+| `leave_game` | none. Before the start only a joined player leaves; a host uses `cancel_game`. After the start any player leaves, host included. |
+| `mark_cell` | `row` (0 to `boardHeight` - 1), `col` (0 to `boardWidth` - 1) |
+| `choose_u` | `index` in the `candidates` of the last state |
 
 Field rules:
 
@@ -71,14 +102,34 @@ Field rules:
 
 | `type` | Fields |
 |---|---|
-| `game_created` | `game`: `{name, maxPlayers, boardWidth, boardHeight, players: [{name, color}]}` |
+| `game_created` | `game`: `{name, maxPlayers, boardWidth, boardHeight, status, players: [{name, color}]}`. `status` is `waiting` or `playing`. For a game in progress, `players` lists only those still in it, in join order. |
 | `game_cancelled` | none. Also sent when there was no game to cancel. |
 | `game_joined` | `game`: same fields as in `game_created`. `players` is in join order, host first. |
 | `game_left` | none. Also sent when the connection had not joined a game. |
 | `game_updated` | `game`: same fields as in `game_created`, after a player joined or left |
-| `game_closed` | none. The host cancelled or disconnected; this connection is no longer in a game. |
-| `games_list` | `games`: list of games, each with the same fields as `game` in `game_created`. Games with room come first, then full ones (players = `maxPlayers`); each group is newest first. |
+| `game_closed` | none. The host cancelled or disconnected before the start; this connection is no longer in a game. |
+| `games_list` | `games`: list of games, each with the same fields as `game` in `game_created`. Waiting games come first, then games in progress; each group is newest first. |
+| `game_started` | `state`: see [Game state](#game-state) |
+| `game_state` | `state`: see [Game state](#game-state). Sent after a move or after a player left. |
+| `game_over` | `winners` (names; several make a draw), `scores` (`{name: points}`, every player), `reason` (`board_full` or `last_player`), `board` (the final one, as in the game state). This connection is no longer in a game. |
 | `error` | `code`, plus `field` for input errors |
+
+### Game state
+
+Players are identified by name. Colors are not repeated here: take them from the
+`players` of the last `game_joined` or `game_updated` before `game_started`, which
+lists everyone.
+
+| Field | Value |
+|---|---|
+| `board` | `boardHeight` rows of `boardWidth` cells; each is `null` or `{owner, disabled}` |
+| `turnOrder` | every player's name, in turn order |
+| `currentPlayer` | whose turn it is |
+| `phase` | `mark` or `choose` |
+| `scores` | `{name: points}`, every player |
+| `leftPlayers` | names of those who left, in turn order |
+| `lastMove` | `{row, col}` of the last cell marked, or `null` |
+| `candidates` | only for the current player in the `choose` phase: a list of Us, each 5 `{row, col}`, in a stable order |
 
 ### Error codes
 
@@ -88,8 +139,12 @@ request. `already_in_game` is always checked first.
 - `create_game`: `invalid_username`, `invalid_color`, `invalid_game_name`,
   `invalid_max_players`, `invalid_board`, then `name_taken`.
 - `join_game`: `invalid_username`, `invalid_color`, `game_not_found`,
-  `game_full`, `username_taken`, then `color_taken`. A missing or non-text
-  `gameName` is reported as `game_not_found`.
+  `game_in_progress`, `game_full`, `username_taken`, then `color_taken`. A
+  missing or non-text `gameName` is reported as `game_not_found`.
+- `mark_cell`: `game_not_started`, `not_your_turn`, `choice_pending`,
+  `cell_out_of_bounds`, then `cell_taken`.
+- `choose_u`: `game_not_started`, `not_your_turn`, `no_choice_pending`, then
+  `invalid_choice`.
 
 | `code` | `field` | Meaning |
 |---|---|---|
@@ -100,8 +155,16 @@ request. `already_in_game` is always checked first.
 | `invalid_board` | `board` | Board size is out of range or height > width |
 | `name_taken` | `gameName` | Another game already uses this name |
 | `game_not_found` | `gameName` | No game has this name |
+| `game_in_progress` | `gameName` | The game has already started |
 | `game_full` | `gameName` | The game already has `maxPlayers` players |
 | `username_taken` | `username` | A player in that game uses this name, ignoring case |
 | `color_taken` | `color` | A player in that game uses this color |
+| `game_not_started` | none | This connection is not in a started game |
+| `not_your_turn` | none | Another player has the turn |
+| `choice_pending` | none | A U must be chosen before anything is marked |
+| `cell_out_of_bounds` | none | `row` or `col` is missing, not an integer or outside the board |
+| `cell_taken` | none | The cell is not empty: it is owned, even by a player who left |
+| `no_choice_pending` | none | There is no U to choose |
+| `invalid_choice` | none | `index` is missing, not an integer or out of range |
 | `already_in_game` | none | This connection is already in a game, as host or player |
 | `invalid_message` | none | Binary frame, malformed JSON or unknown `type` |
