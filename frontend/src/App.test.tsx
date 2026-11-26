@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StrictMode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,12 +7,14 @@ import { createGameSocket } from './game/gameSocket'
 import type { GameSocketFactory } from './game/gameSocket'
 import type { GameSummary } from './game/types'
 import { FakeWebSocket } from './test/FakeWebSocket'
+import { makeState } from './test/gameState'
 
 const game: GameSummary = {
   name: 'Partida 1',
   maxPlayers: 2,
   boardWidth: 12,
   boardHeight: 10,
+  status: 'waiting',
   players: [{ name: 'Esteban', color: 'red' }],
 }
 
@@ -387,6 +389,7 @@ const duel: GameSummary = {
   maxPlayers: 3,
   boardWidth: 12,
   boardHeight: 10,
+  status: 'waiting',
   players: [{ name: 'Esteban', color: 'red' }],
 }
 
@@ -401,6 +404,7 @@ const ana = { name: 'Ana', color: 'blue' } as const
 const luis = { name: 'Luis', color: 'green' } as const
 const duelWithAna = withPlayers(duel, ana)
 const fullDuel = withPlayers(duelWithAna, luis)
+const startedDuel: GameSummary = { ...fullDuel, status: 'playing' }
 
 const button = (name: string) => screen.getByRole('button', { name })
 
@@ -467,6 +471,7 @@ describe('App joining a game', () => {
 
 const FULL_NOTICE = 'That game is full'
 const GONE_NOTICE = 'That game is no longer available'
+const STARTED_NOTICE = 'That game has already started'
 
 function expectLobbyWithNotice(notice: string) {
   expect(createGameButton()).toBeInTheDocument()
@@ -475,7 +480,7 @@ function expectLobbyWithNotice(notice: string) {
 
 describe('App join form', () => {
   it.each([
-    ['fills up', [fullDuel], FULL_NOTICE],
+    ['starts', [startedDuel], STARTED_NOTICE],
     ['disappears', [], GONE_NOTICE],
   ])('returns to the lobby when the game %s', async (_, games, notice) => {
     const { server } = await openJoinForm()
@@ -499,6 +504,7 @@ describe('App join form', () => {
   it.each([
     ['game_full', FULL_NOTICE],
     ['game_not_found', GONE_NOTICE],
+    ['game_in_progress', STARTED_NOTICE],
   ])('returns to the lobby on a %s error', async (code, notice) => {
     const { server } = await submitJoinForm()
 
@@ -619,5 +625,285 @@ describe('App lost connection as a player', () => {
     refresh(refreshed)
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+const startedGame: GameSummary = {
+  ...withPlayers(game, ana),
+  status: 'playing',
+}
+
+// The host is "Esteban", and "Ana" moves first.
+const opening = makeState()
+
+async function startAsHost() {
+  const app = await reachWaitingScreen()
+  receive(app.server, { type: 'game_updated', game: startedGame })
+  receive(app.server, { type: 'game_started', state: opening })
+  receiveGames(app.server, [startedGame])
+  return app
+}
+
+/** Join the last seat of "Duel" as "Ana", which starts it. */
+async function startAsPlayer(state = opening) {
+  const app = await submitJoinForm()
+  const started: GameSummary = { ...duelWithAna, status: 'playing' }
+  // Both arrive before React has rendered the waiting room.
+  act(() => {
+    app.server.simulateMessage({ type: 'game_joined', game: started })
+    app.server.simulateMessage({ type: 'game_started', state })
+  })
+  receiveGames(app.server, [started])
+  return app
+}
+
+const turnBar = () => screen.getByTestId('turn-bar')
+
+const scoreRows = () =>
+  within(screen.getByRole('list', { name: 'Players' }))
+    .getAllByRole('listitem')
+    .map((row) => row.textContent)
+
+function clickCell(row: number, col: number) {
+  const cell = document.querySelector(
+    `[data-row="${row}"][data-col="${col}"]`,
+  )!
+  const mouse = { pointerId: 1, pointerType: 'mouse', button: 0 }
+  fireEvent.pointerDown(cell, mouse)
+  fireEvent.pointerUp(cell, mouse)
+}
+
+describe('App game start', () => {
+  it('takes the host from the waiting screen to the game', async () => {
+    await startAsHost()
+
+    expect(turnBar()).toHaveTextContent("Ana's turn")
+    expect(turnBar()).toHaveTextContent('Ana (Blue)')
+    expect(scoreRows()).toEqual(['Ana 0', 'Esteban 0'])
+    expect(
+      screen.queryByRole('button', { name: 'Cancel game' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('takes the player who fills the game straight to it', async () => {
+    await startAsPlayer()
+
+    expect(turnBar()).toHaveTextContent('Your turn!')
+    expect(button('Leave game')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Waiting for players...'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('knows who a player is when others joined first', async () => {
+    const app = await joinDuel()
+    const started: GameSummary = startedDuel
+
+    receive(app.server, { type: 'game_updated', game: started })
+    receive(app.server, {
+      type: 'game_started',
+      state: makeState({
+        turnOrder: ['Ana', 'Esteban', 'Luis'],
+        scores: { Ana: 0, Esteban: 0, Luis: 0 },
+      }),
+    })
+
+    expect(turnBar()).toHaveTextContent('Your turn!')
+  })
+
+  it('ignores a start that arrives after the user left', async () => {
+    const { server, user } = await joinDuel()
+    await user.click(button('Leave game'))
+
+    receive(server, { type: 'game_started', state: opening })
+
+    expect(
+      server.sent.filter(
+        (message) => (message as { type: string }).type === 'leave_game',
+      ),
+    ).toHaveLength(1)
+    expect(createGameButton()).toBeInTheDocument()
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+})
+
+describe('App moves', () => {
+  it('shows each new state', async () => {
+    const { server } = await startAsHost()
+
+    receive(server, {
+      type: 'game_state',
+      state: makeState({
+        currentPlayer: 'Esteban',
+        scores: { Ana: 1, Esteban: 0 },
+      }),
+    })
+
+    expect(turnBar()).toHaveTextContent('Your turn!')
+    expect(scoreRows()).toEqual(['Ana 1', 'Esteban 0'])
+  })
+
+  it('sends the cell the user marks', async () => {
+    const { server } = await startAsPlayer()
+
+    clickCell(2, 3)
+
+    expect(server.sent.at(-1)).toEqual({ type: 'mark_cell', row: 2, col: 3 })
+  })
+
+  it('sends the U the user confirms', async () => {
+    const candidates = [0, 1].map((row) =>
+      [0, 1, 2, 3, 4].map((col) => ({ row, col })),
+    )
+    const { server, user } = await startAsPlayer()
+    receive(server, {
+      type: 'game_state',
+      state: makeState({ phase: 'choose', candidates }),
+    })
+
+    await user.click(button('Next'))
+    await user.click(button('Confirm'))
+
+    expect(server.sent.at(-1)).toEqual({ type: 'choose_u', index: 1 })
+  })
+})
+
+const gameOver = {
+  type: 'game_over',
+  winners: ['Ana'],
+  scores: { Ana: 3, Esteban: 1 },
+  reason: 'board_full',
+  board: opening.board,
+}
+
+describe('App end of the game', () => {
+  it('shows the winner screen', async () => {
+    const { server } = await startAsHost()
+
+    receive(server, gameOver)
+
+    expect(
+      screen.getByRole('heading', { name: 'Ana wins!' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Ana 3')).toBeInTheDocument()
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+
+  it('returns to the current lobby on Close, sending nothing', async () => {
+    const { server, user } = await startAsHost()
+    receive(server, gameOver)
+    receiveGames(server, [duel])
+    const sent = server.sent.length
+
+    await user.click(button('Close'))
+
+    expect(screen.getByText('Duel')).toBeInTheDocument()
+    expect(createGameButton()).toBeEnabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(server.sent).toHaveLength(sent)
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+
+  it('keeps the winner screen if the connection is then lost', async () => {
+    const { server, user } = await startAsHost()
+    receive(server, gameOver)
+
+    act(() => server.simulateServerClose())
+    expect(
+      screen.getByRole('heading', { name: 'Ana wins!' }),
+    ).toBeInTheDocument()
+    await user.click(button('Close'))
+
+    expectDisconnectedLobby()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('App leaving a game in progress', () => {
+  const PLAYING_NOTICE = 'Connection lost, you left the game'
+
+  it.each([
+    ['host', startAsHost],
+    ['player', startAsPlayer],
+  ])('sends leave_game for the %s and shows the lobby', async (_, start) => {
+    const { server, user } = await start()
+
+    await user.click(button('Leave game'))
+
+    expect(server.sent.at(-1)).toEqual({ type: 'leave_game' })
+    expect(server.sent).not.toContainEqual({ type: 'cancel_game' })
+    expect(createGameButton()).toBeEnabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+
+  it('tells a host who loses the connection that they left', async () => {
+    const { server } = await startAsHost()
+
+    act(() => server.simulateServerClose())
+
+    expectDisconnectedLobby()
+    expect(screen.getByRole('alert').textContent).toBe(PLAYING_NOTICE)
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+
+  it('shows the notice once after a refresh', async () => {
+    const refreshed = refresh(await startAsHost())
+
+    expect(screen.getByRole('alert').textContent).toBe(PLAYING_NOTICE)
+    refresh(refreshed)
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+// The server may start the game before it reads the host's cancel_game, which it
+// then ignores. The host would stay seated in a game they cannot see.
+describe('App cancelling as the game starts', () => {
+  const sentOfType = (server: FakeWebSocket, type: string) =>
+    server.sent.filter((message) => (message as { type: string }).type === type)
+
+  async function cancelAsHost() {
+    const app = await reachWaitingScreen()
+    await app.user.click(button('Cancel game'))
+    return app
+  }
+
+  it('leaves the game that started anyway', async () => {
+    const { server } = await cancelAsHost()
+
+    receive(server, { type: 'game_started', state: opening })
+
+    expect(server.sent.slice(-2)).toEqual([
+      { type: 'cancel_game' },
+      { type: 'leave_game' },
+    ])
+    expect(createGameButton()).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(window.sessionStorage).toHaveLength(0)
+  })
+
+  it('leaves it only once', async () => {
+    const { server } = await cancelAsHost()
+
+    receive(server, { type: 'game_started', state: opening })
+    receive(server, { type: 'game_started', state: opening })
+
+    expect(sentOfType(server, 'leave_game')).toHaveLength(1)
+  })
+
+  it('does not leave the next game the user is in', async () => {
+    const { server, user } = await cancelAsHost()
+    receiveGames(server, [duel])
+    await user.click(button('Join'))
+    await user.type(screen.getByLabelText('Your name'), 'Ana')
+    await user.click(screen.getByRole('radio', { name: 'Blue' }))
+    await user.click(button('Join'))
+
+    receive(server, { type: 'game_joined', game: duelWithAna })
+    receive(server, { type: 'game_started', state: opening })
+
+    expect(sentOfType(server, 'leave_game')).toEqual([])
+    expect(turnBar()).toBeInTheDocument()
   })
 })

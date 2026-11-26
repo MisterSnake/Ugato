@@ -9,11 +9,14 @@ if TYPE_CHECKING:
 
 
 class Room:
-    """The connections in one game: its host and its joined players."""
+    """The connections in one game: its host and its joined players.
+
+    Once the game has started, a host who leaves is no longer in the room.
+    """
 
     def __init__(self, game: Game, host: ClientSession) -> None:
         self.game = game
-        self.host = host
+        self.host: ClientSession | None = host
         # In join order, like the players of the game.
         self.joined: dict[ClientSession, Player] = {}
 
@@ -38,9 +41,25 @@ class GameRooms:
         player = self._rooms[self._key(game)].joined.pop(session)
         game.players.remove(player)
 
+    def drop(self, game: Game, session: ClientSession) -> None:
+        """Take a connection out of a started game, which keeps its player."""
+        room = self._rooms[self._key(game)]
+        if session is room.host:
+            room.host = None
+        else:
+            del room.joined[session]
+
     def members(self, game: Game) -> list[ClientSession]:
+        return [session for session, _ in self.seats(game)]
+
+    def seats(self, game: Game) -> list[tuple[ClientSession, Player]]:
+        """Each connection in the game with the player it plays as."""
         room = self._find(game)
-        return [] if room is None else [room.host, *room.joined]
+        if room is None:
+            return []
+        # The host is the first player of the game.
+        host = [] if room.host is None else [(room.host, game.players[0])]
+        return [*host, *room.joined.items()]
 
     def close(self, game: Game) -> list[ClientSession]:
         """Forget the room of a game. Return the players who were in it."""

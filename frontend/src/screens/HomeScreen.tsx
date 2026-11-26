@@ -1,4 +1,3 @@
-import { isFull } from '../game/isFull'
 import type { GameSummary, LobbyState } from '../game/types'
 import { colorLabel } from './colorLabel'
 
@@ -88,8 +87,8 @@ function GameRow({
         <dt>Board</dt>
         <dd>{`${game.boardWidth} x ${game.boardHeight}`}</dd>
       </dl>
-      {isFull(game) ? (
-        <p className="full">Full</p>
+      {game.status === 'playing' ? (
+        <p className="in-progress">In progress</p>
       ) : (
         <button type="button" onClick={() => onJoin(game.name)}>
           Join

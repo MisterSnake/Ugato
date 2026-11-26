@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from app.games.fanout import send_to_each
-from app.games.models import Game
+from app.games.models import Game, GameStatus
 from app.games.registry import GameRegistry
 
 
@@ -13,27 +13,30 @@ def game_summary(game: Game) -> dict[str, Any]:
         "maxPlayers": game.max_players,
         "boardWidth": game.board_width,
         "boardHeight": game.board_height,
+        "status": game.status,
         "players": [
-            {"name": player.name, "color": player.color} for player in game.players
+            {"name": player.name, "color": player.color}
+            for player in game.players
+            if game.match is None or player.name not in game.match.left
         ],
     }
 
 
 def lobby_snapshot(registry: GameRegistry) -> dict[str, Any]:
-    """The `games_list` message: games with room first, then the full ones.
+    """The `games_list` message: waiting games first, then the ones in progress.
 
     Each group goes from newest to oldest.
     """
     # The sort is stable, so each group keeps the newest-first order.
-    games = sorted(reversed(registry.list()), key=_is_full)
+    games = sorted(reversed(registry.list()), key=_is_playing)
     return {
         "type": "games_list",
         "games": [game_summary(game) for game in games],
     }
 
 
-def _is_full(game: Game) -> bool:
-    return len(game.players) >= game.max_players
+def _is_playing(game: Game) -> bool:
+    return game.status is GameStatus.PLAYING
 
 
 class LobbyHub:

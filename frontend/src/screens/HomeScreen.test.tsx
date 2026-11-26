@@ -29,6 +29,7 @@ const twoGames: LobbyState = {
       maxPlayers: 2,
       boardWidth: 12,
       boardHeight: 10,
+      status: 'waiting',
       players: [{ name: 'Esteban', color: 'red' }],
     },
     {
@@ -36,6 +37,7 @@ const twoGames: LobbyState = {
       maxPlayers: 4,
       boardWidth: 20,
       boardHeight: 15,
+      status: 'waiting',
       players: [{ name: 'Ana', color: 'blue' }],
     },
   ],
@@ -129,22 +131,48 @@ describe('HomeScreen', () => {
     await userEvent.click(within(row).getByRole('button', { name: 'Join' }))
 
     expect(onJoin).toHaveBeenCalledExactlyOnceWith('Partida 1')
-    expect(within(row).queryByText('Full')).not.toBeInTheDocument()
+    expect(within(row).queryByText('In progress')).not.toBeInTheDocument()
   })
 
-  it('marks a full game and offers no way to join it', () => {
-    const full: GameSummary = {
-      ...twoGames.games[0],
-      name: 'Duel',
-      players: [
-        { name: 'Esteban', color: 'red' },
-        { name: 'Ana', color: 'blue' },
-      ],
-    }
-    renderHome({ lobby: { status: 'ready', games: [full] } })
+  const inProgress: GameSummary = {
+    name: 'Duel',
+    maxPlayers: 2,
+    boardWidth: 8,
+    boardHeight: 8,
+    status: 'playing',
+    players: [
+      { name: 'Esteban', color: 'red' },
+      { name: 'Ana', color: 'blue' },
+    ],
+  }
+
+  it('marks a game in progress and offers no way to join it', () => {
+    renderHome({ lobby: { status: 'ready', games: [inProgress] } })
     const row = screen.getByRole('listitem')
 
-    expect(within(row).getByText('Full')).toBeInTheDocument()
+    for (const text of ['Duel', 'Esteban (Red)', '2 / 2', '8 x 8']) {
+      expect(within(row).getByText(text)).toBeInTheDocument()
+    }
+    expect(within(row).getByText('In progress')).toBeInTheDocument()
+    expect(within(row).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('shows the first remaining player of a game whose host left', () => {
+    const hostLeft: GameSummary = {
+      ...inProgress,
+      name: 'Partida 1',
+      maxPlayers: 3,
+      players: [
+        { name: 'Ana', color: 'blue' },
+        { name: 'Luis', color: 'green' },
+      ],
+    }
+    renderHome({ lobby: { status: 'ready', games: [hostLeft] } })
+    const row = screen.getByRole('listitem')
+
+    expect(within(row).getByText('Ana (Blue)')).toBeInTheDocument()
+    expect(within(row).getByText('2 / 3')).toBeInTheDocument()
+    expect(within(row).getByText('In progress')).toBeInTheDocument()
     expect(within(row).queryByRole('button')).not.toBeInTheDocument()
   })
 

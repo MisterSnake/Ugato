@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from typing import Any
 
-from app.games.models import Color, Game, Player
+from app.games.models import Color, Game, GameStatus, Player
 
 NAME_MIN_LENGTH = 3
 NAME_MAX_LENGTH = 20
@@ -13,7 +13,7 @@ BOARD_MAX_SIZE = 30
 
 
 class ValidationError(Exception):
-    def __init__(self, field: str, code: str) -> None:
+    def __init__(self, field: str | None, code: str) -> None:
         super().__init__(f"{field}: {code}")
         self.field = field
         self.code = code
@@ -89,6 +89,8 @@ def validate_join_request(payload: Mapping[str, Any]) -> tuple[str, Player]:
 
 
 def check_can_join(game: Game, player: Player) -> None:
+    if game.status is GameStatus.PLAYING:
+        raise ValidationError("gameName", "game_in_progress")
     if len(game.players) >= game.max_players:
         raise ValidationError("gameName", "game_full")
     # Both names are already trimmed by the name rules.

@@ -31,12 +31,47 @@ export interface Player {
   color: Color
 }
 
+export type GameStatus = 'waiting' | 'playing'
+
 export interface GameSummary {
   name: string
   maxPlayers: number
   boardWidth: number
   boardHeight: number
+  status: GameStatus
+  /** For a game in progress, only those still in it. */
   players: Player[]
+}
+
+export interface Position {
+  row: number
+  col: number
+}
+
+/** A cell is `null` while it is empty. */
+export type Cell = { owner: string; disabled: boolean } | null
+
+/** Rows of cells, as `board[row][col]`. */
+export type Board = Cell[][]
+
+/** A started game. Players are identified by name. */
+export interface GameState {
+  board: Board
+  turnOrder: string[]
+  currentPlayer: string
+  phase: 'mark' | 'choose'
+  scores: Record<string, number>
+  leftPlayers: string[]
+  lastMove: Position | null
+  /** Only sent to the player who has to choose a U. */
+  candidates?: Position[][]
+}
+
+export interface GameOver {
+  winners: string[]
+  scores: Record<string, number>
+  reason: 'board_full' | 'last_player'
+  board: Board
 }
 
 export interface LobbyState {
@@ -62,6 +97,14 @@ export type ErrorCode =
   | 'game_full'
   | 'username_taken'
   | 'color_taken'
+  | 'game_in_progress'
+  | 'game_not_started'
+  | 'not_your_turn'
+  | 'choice_pending'
+  | 'cell_out_of_bounds'
+  | 'cell_taken'
+  | 'no_choice_pending'
+  | 'invalid_choice'
   | 'already_in_game'
   | 'invalid_message'
 
@@ -78,4 +121,7 @@ export type ServerMessage =
   | { type: 'game_updated'; game: GameSummary }
   | { type: 'game_closed' }
   | { type: 'games_list'; games: GameSummary[] }
+  | { type: 'game_started'; state: GameState }
+  | { type: 'game_state'; state: GameState }
+  | ({ type: 'game_over' } & GameOver)
   | ({ type: 'error' } & ServerError)

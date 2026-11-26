@@ -1,12 +1,15 @@
+import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from random import Random
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, WebSocket
 
 from app.games.fanout import send_to_each
 from app.games.lobby import LobbyHub, game_summary, get_lobby_hub, lobby_snapshot
+from app.games.match import Match, game_over_payload, get_random, match_state
 from app.games.models import Game, Player
 from app.games.registry import GameRegistry, get_registry
 from app.games.rooms import GameRooms, get_game_rooms
@@ -60,6 +63,31 @@ class PlayerRole:
     player: Player
 
 
+@dataclass(frozen=True)
+class PlayingRole:
+    """A seat in a started game. The host plays like everyone else."""
+
+    game: Game
+    player: Player
+    # Shared by every connection in the game, so its updates arrive in order.
+    outbox: asyncio.Lock
+
+
+# A message for one connection.
+type Delivery = tuple[WebSocket, dict[str, Any]]
+
+
+async def deliver(outbox: asyncio.Lock, deliveries: list[Delivery]) -> None:
+    """Send the messages of one change, after those of the changes before it.
+
+    The messages must be built, and this awaited, with no await since the
+    change: the lock serves its waiters in order.
+    """
+    async with outbox:
+        for websocket, message in deliveries:
+            await send_to_each([websocket], message)
+
+
 class ClientSession:
     """The state of one connection.
 
@@ -73,12 +101,14 @@ class ClientSession:
         registry: GameRegistry,
         hub: LobbyHub,
         rooms: GameRooms,
+        rng: Random | None = None,
     ) -> None:
         self._websocket = websocket
         self._registry = registry
         self._hub = hub
         self._rooms = rooms
-        self._role: HostRole | PlayerRole | None = None
+        self._random = rng or get_random()
+        self._role: HostRole | PlayerRole | PlayingRole | None = None
 
     @property
     def websocket(self) -> WebSocket:
@@ -95,6 +125,12 @@ class ClientSession:
                 await self._join(message)
             case {"type": "cancel_game"}:
                 await self._cancel()
+            case {"type": "mark_cell"}:
+                row, col = message.get("row"), message.get("col")
+                await self._play(lambda match, name: match.mark(name, row, col))
+            case {"type": "choose_u"}:
+                index = message.get("index")
+                await self._play(lambda match, name: match.choose(name, index))
             case {"type": "leave_game"}:
                 await self._leave()
             case _:
@@ -103,7 +139,9 @@ class ClientSession:
     async def close(self) -> None:
         # Unsubscribed first, so the broadcast never targets the closing socket.
         self._hub.unsubscribe(self._websocket)
-        if left := self._leave_room():
+        if isinstance(self._role, PlayingRole):
+            await self._quit_match(self._role)
+        elif left := self._leave_room():
             await self._send_roster(left)
             await self._broadcast_lobby()
         elif (players := self._end_game()) is not None:
@@ -118,7 +156,27 @@ class ClientSession:
         self._role = None
         return game
 
+    async def _quit_match(
+        self, role: PlayingRole, confirmation: dict[str, Any] | None = None
+    ) -> None:
+        """Leave a started game, which goes on without this connection."""
+        self._role = None
+        self._rooms.drop(role.game, self)
+        match = role.game.match
+        match.leave(role.player.name)
+        if match.result is None:
+            deliveries = self._state_deliveries(role.game, "game_state")
+        else:
+            deliveries = self._finish(role.game)
+        if confirmation is not None:
+            deliveries.insert(0, (self._websocket, confirmation))
+        await deliver(role.outbox, deliveries)
+        await self._broadcast_lobby()
+
     async def _leave(self) -> None:
+        if isinstance(self._role, PlayingRole):
+            await self._quit_match(self._role, confirmation={"type": "game_left"})
+            return
         left = self._leave_room()
         try:
             await self._websocket.send_json({"type": "game_left"})
@@ -198,20 +256,91 @@ class ClientSession:
             return
         self._rooms.add(game, self, player)
         self._role = PlayerRole(game, player)
-        await self._websocket.send_json(
-            {"type": "game_joined", "game": game_summary(game)}
-        )
-        await self._send_roster(game)
+        if len(game.players) == game.max_players:
+            await self._start(game)
+        else:
+            await self._websocket.send_json(
+                {"type": "game_joined", "game": game_summary(game)}
+            )
+            await self._send_roster(game)
         await self._broadcast_lobby()
+
+    async def _start(self, game: Game) -> None:
+        """Start the game this connection has just filled."""
+        names = [player.name for player in game.players]
+        game.match = Match(names, game.board_width, game.board_height, self._random)
+        outbox = asyncio.Lock()
+        for session, player in self._rooms.seats(game):
+            session.start_playing(PlayingRole(game, player, outbox))
+        summary = game_summary(game)
+        joined = (self._websocket, {"type": "game_joined", "game": summary})
+        updated = {"type": "game_updated", "game": summary}
+        await deliver(
+            outbox,
+            [
+                joined,
+                *((websocket, updated) for websocket in self._others(game)),
+                *self._state_deliveries(game, "game_started"),
+            ],
+        )
+
+    def start_playing(self, role: PlayingRole) -> None:
+        self._role = role
+
+    async def _play(self, move: Callable[[Match, str], None]) -> None:
+        role = self._role
+        if not isinstance(role, PlayingRole):
+            await send_error(self._websocket, "game_not_started")
+            return
+        try:
+            move(role.game.match, role.player.name)
+        except ValidationError as error:
+            await send_error(self._websocket, error.code, error.field)
+            return
+        # No await from the move to the delivery, so nothing can slip in between.
+        deliveries = self._state_deliveries(role.game, "game_state")
+        over = role.game.match.result is not None
+        if over:
+            deliveries += self._finish(role.game)
+        await deliver(role.outbox, deliveries)
+        if over:
+            await self._broadcast_lobby()
+
+    def _finish(self, game: Game) -> list[Delivery]:
+        """Remove a game whose match is over. Return the news for its players.
+
+        It never awaits, so nobody can act on a finished match.
+        """
+        message = {"type": "game_over", **game_over_payload(game.match)}
+        sessions = [session for session, _ in self._rooms.seats(game)]
+        self._rooms.close(game)
+        self._registry.remove(game)
+        for session in sessions:
+            session.forget_game()
+        return [(session.websocket, message) for session in sessions]
+
+    def _state_deliveries(self, game: Game, message_type: str) -> list[Delivery]:
+        """The match as each player in the game sees it."""
+        return [
+            (
+                session.websocket,
+                {"type": message_type, "state": match_state(game.match, player.name)},
+            )
+            for session, player in self._rooms.seats(game)
+        ]
 
     async def _send_roster(self, game: Game) -> None:
         """Send the player list to everyone in the game but this connection."""
-        others = [
+        await send_to_each(
+            self._others(game), {"type": "game_updated", "game": game_summary(game)}
+        )
+
+    def _others(self, game: Game) -> list[WebSocket]:
+        return [
             member.websocket
             for member in self._rooms.members(game)
             if member is not self
         ]
-        await send_to_each(others, {"type": "game_updated", "game": game_summary(game)})
 
     async def _broadcast_lobby(self) -> None:
         await self._hub.broadcast(lobby_snapshot(self._registry))
@@ -223,9 +352,10 @@ async def game_socket(
     registry: Annotated[GameRegistry, Depends(get_registry)],
     hub: Annotated[LobbyHub, Depends(get_lobby_hub)],
     rooms: Annotated[GameRooms, Depends(get_game_rooms)],
+    rng: Annotated[Random, Depends(get_random)],
 ) -> None:
     await websocket.accept()
-    session = ClientSession(websocket, registry, hub, rooms)
+    session = ClientSession(websocket, registry, hub, rooms, rng)
     try:
         async for text in iter_frames(websocket):
             await session.handle(parse_message(text))
