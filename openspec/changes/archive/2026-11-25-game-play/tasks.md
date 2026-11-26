@@ -288,7 +288,7 @@ Rule tests build boards from small ASCII grids (for example `"R.R/RRR"`), using 
 ## 8. Integration check
 
 - [x] 8.1 Full suites and build. In the backend, `pytest -q` is green. In the frontend, `npm test`, `npm run lint` and `npm run build` are all green.
-- [ ] 8.2 Manual end-to-end check with both dev servers, two desktop browser tabs and a phone on the same network:
+- [x] 8.2 Manual end-to-end check with both dev servers, two desktop browser tabs and a phone on the same network:
   - A creates "Partida 1" with maxPlayers 3 and a 12 x 8 board. B joins, then the phone joins as the third player.
   - The game starts on all three. The lobby in a fourth tab shows "In progress" with the host and "3 / 3", and joining it is impossible.
   - The turn bar always shows whose turn it is, and the current player sees "Your turn!" and the colored border.
