@@ -17,6 +17,13 @@ class Color(StrEnum):
     PURPLE = "purple"
 
 
+class TimerMode(StrEnum):
+    NONE = "none"
+    SLOW = "slow"
+    NORMAL = "normal"
+    FAST = "fast"
+
+
 class GameStatus(StrEnum):
     WAITING = "waiting"
     PLAYING = "playing"
@@ -36,6 +43,7 @@ class Game:
     board_height: int
     # Includes the ones who left after the start: the match knows who they are.
     players: list[Player]
+    timer: TimerMode = TimerMode.NONE
     # Created when the game starts.
     match: Match | None = None
 

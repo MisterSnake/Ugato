@@ -13,6 +13,7 @@ def game_summary(game: Game) -> dict[str, Any]:
         "maxPlayers": game.max_players,
         "boardWidth": game.board_width,
         "boardHeight": game.board_height,
+        "timer": game.timer,
         "status": game.status,
         "players": [
             {"name": player.name, "color": player.color}

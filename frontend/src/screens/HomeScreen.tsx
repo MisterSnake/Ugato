@@ -1,4 +1,5 @@
 import type { GameSummary, LobbyState } from '../game/types'
+import { TIMER_LABELS } from '../game/validation'
 import { colorLabel } from './colorLabel'
 
 interface HomeScreenProps {
@@ -86,6 +87,8 @@ function GameRow({
         <dd>{`${game.players.length} / ${game.maxPlayers}`}</dd>
         <dt>Board</dt>
         <dd>{`${game.boardWidth} x ${game.boardHeight}`}</dd>
+        <dt>Timer</dt>
+        <dd>{TIMER_LABELS[game.timer]}</dd>
       </dl>
       {game.status === 'playing' ? (
         <p className="in-progress">In progress</p>

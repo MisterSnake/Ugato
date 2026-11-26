@@ -600,3 +600,178 @@ describe('GameScreen voting panel', () => {
     expect(queryButton('Mark')).not.toBeInTheDocument()
   })
 })
+
+const listedScores = () =>
+  within(screen.getByRole('list', { name: 'Players' }))
+    .getAllByRole('listitem')
+    .map((item) => item.textContent)
+
+const slowGame: Partial<GameState> = {
+  timer: 'slow',
+  clocks: { Ana: 75_000, Esteban: 9_400 },
+}
+
+describe('GameScreen player clocks', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('shows the time of each player next to their score', () => {
+    renderGame(slowGame)
+
+    expect(listedScores()).toEqual(['Ana 0 1:15', 'Esteban 0 9.4'])
+  })
+
+  it('counts down only the clock of the current player', () => {
+    vi.useFakeTimers()
+    renderGame(slowGame)
+
+    act(() => vi.advanceTimersByTime(5_000))
+
+    expect(listedScores()).toEqual(['Ana 0 1:10', 'Esteban 0 9.4'])
+  })
+
+  it('shows tenths as they pass and stops at zero', () => {
+    vi.useFakeTimers()
+    renderGame({ ...slowGame, currentPlayer: 'Esteban' })
+
+    act(() => vi.advanceTimersByTime(300))
+    expect(listedScores()).toContain('Esteban 0 9.1')
+
+    act(() => vi.advanceTimersByTime(60_000))
+    expect(listedScores()).toContain('Esteban 0 0.0')
+  })
+
+  it('starts again from each new state', () => {
+    vi.useFakeTimers()
+    const { update } = renderGame(slowGame)
+    act(() => vi.advanceTimersByTime(5_000))
+
+    update({ ...slowGame, clocks: { Ana: 40_000, Esteban: 9_400 } })
+
+    expect(listedScores()).toContain('Ana 0 0:40')
+    act(() => vi.advanceTimersByTime(2_000))
+    expect(listedScores()).toContain('Ana 0 0:38')
+  })
+
+  it('does not move a clock while a vote is open', () => {
+    vi.useFakeTimers()
+    renderGame({
+      timer: 'normal',
+      clocks: { Ana: 30_000, Esteban: 21_000 },
+      currentPlayer: 'Esteban',
+      vote: { ...openVote, proposer: 'Esteban' },
+    })
+
+    act(() => vi.advanceTimersByTime(5_000))
+
+    expect(listedScores()).toContain('Esteban 0 0:21')
+  })
+
+  it('keeps no interval when no clock runs, or once it is closed', () => {
+    vi.useFakeTimers()
+    const { update, unmount } = renderGame(slowGame)
+    expect(vi.getTimerCount()).toBe(1)
+
+    update({ ...slowGame, phase: 'choose' })
+    expect(vi.getTimerCount()).toBe(0)
+
+    update(slowGame)
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('shows no clock in an untimed game', () => {
+    renderGame()
+
+    expect(listedScores()).toEqual(['Ana 0', 'Esteban 0'])
+  })
+})
+
+describe('GameScreen timeout notice', () => {
+  it.each([
+    ['Esteban', 'Ana ran out of time'],
+    ['Ana', 'You ran out of time'],
+  ])('tells %s "%s"', (me, notice) => {
+    render(
+      <GameScreen
+        state={makeState()}
+        players={players}
+        me={me}
+        timedOut="Ana"
+        onMark={vi.fn()}
+        onChoose={vi.fn()}
+        onPropose={vi.fn()}
+        onVote={vi.fn()}
+        onLeave={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent(notice)
+  })
+
+  it('says nothing when nobody ran out of time', () => {
+    renderGame()
+
+    expect(screen.queryByText(/ran out of time/)).not.toBeInTheDocument()
+  })
+})
+
+const turnText = () =>
+  within(screen.getByTestId('turn-bar')).getByText(/choos/i, {
+    selector: 'p',
+  })
+
+const estebanChoosing: Partial<GameState> = {
+  timer: 'normal',
+  clocks: { Ana: 30_000, Esteban: 18_000 },
+  currentPlayer: 'Esteban',
+  phase: 'choose',
+  chooseMsLeft: 5_000,
+}
+
+describe('GameScreen choose clock', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it.each([
+    ['Ana', 'Esteban is choosing a U (5.0)', 'Esteban is choosing a U (3.0)'],
+    ['Esteban', 'Choose a U (5.0)', 'Choose a U (3.0)'],
+  ])('counts down for %s', (me, before, after) => {
+    vi.useFakeTimers()
+    renderGame(estebanChoosing, me)
+
+    expect(turnText()).toHaveTextContent(before)
+    act(() => vi.advanceTimersByTime(2_000))
+
+    expect(turnText()).toHaveTextContent(after)
+  })
+
+  it('stands still outside its own clock, which stays frozen', () => {
+    vi.useFakeTimers()
+    renderGame(estebanChoosing, 'Ana')
+
+    act(() => vi.advanceTimersByTime(2_000))
+
+    expect(listedScores()).toContain('Esteban 0 0:18')
+  })
+
+  it('does not read every tick aloud', () => {
+    renderGame(estebanChoosing, 'Ana')
+
+    expect(screen.getByText('(5.0)')).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('keeps the candidate count next to the time', () => {
+    renderGame({ ...estebanChoosing, candidates: [[], []] }, 'Esteban')
+
+    expect(screen.getByTestId('turn-bar')).toHaveTextContent('Choose a U (5.0)')
+  })
+
+  it('shows no time in an untimed game', () => {
+    renderGame({ currentPlayer: 'Esteban', phase: 'choose' }, 'Ana')
+
+    expect(turnText().textContent).toBe('Esteban is choosing a U')
+  })
+})

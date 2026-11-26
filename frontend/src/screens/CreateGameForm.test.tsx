@@ -42,6 +42,18 @@ describe('CreateGameForm fields', () => {
     expect(screen.getByLabelText('Board width')).toHaveValue(8)
     expect(screen.getByLabelText('Board height')).toHaveValue(8)
   })
+
+  it('offers the four timers with "No timer" preselected', () => {
+    renderForm()
+    const timer = screen.getByLabelText('Timer')
+
+    expect(timer).toHaveDisplayValue('No timer')
+    expect(
+      within(timer)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['No timer', 'Slow 60-15', 'Normal 30-10', 'Fast 10-5'])
+  })
 })
 
 async function fillForm({ width = '12', height = '10' } = {}) {
@@ -74,7 +86,20 @@ describe('CreateGameForm validation', () => {
       maxPlayers: 3,
       boardWidth: 12,
       boardHeight: 10,
+      timer: 'none',
     })
+  })
+
+  it('submits the chosen timer', async () => {
+    const { onSubmit } = renderForm()
+    const user = await fillForm()
+
+    await user.selectOptions(screen.getByLabelText('Timer'), 'Fast 10-5')
+    await user.click(submitButton())
+
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ timer: 'fast' }),
+    )
   })
 
   it('shows a board error and does not submit when height exceeds width', async () => {
@@ -148,6 +173,23 @@ describe('CreateGameForm server errors', () => {
     expect(
       screen.queryByText('That game name is already taken.'),
     ).not.toBeInTheDocument()
+  })
+
+  it('shows a timer error on the timer field until it is changed', async () => {
+    render(
+      <CreateGameForm
+        onSubmit={vi.fn()}
+        serverError={{ field: 'timer', code: 'invalid_timer' }}
+      />,
+    )
+    const timer = screen.getByLabelText('Timer')
+
+    expect(timer).toHaveAccessibleDescription('Choose a timer.')
+    expect(timer).toBeInvalid()
+
+    await userEvent.selectOptions(timer, 'Slow 60-15')
+
+    expect(timer).toBeValid()
   })
 
   it('shows an error that has no field as a form message', () => {

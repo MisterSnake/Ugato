@@ -1,6 +1,6 @@
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from random import Random
 from typing import Annotated, Any
@@ -14,15 +14,19 @@ from app.games.match import (
     EndReason,
     FailedVote,
     Match,
+    TimedOut,
     game_over_payload,
     get_random,
+    get_timer_modes,
     get_vote_seconds,
     match_state,
 )
-from app.games.models import Game, Player
+from app.games.models import Game, Player, TimerMode
 from app.games.registry import GameRegistry, get_registry
 from app.games.rooms import GameRooms, get_game_rooms
 from app.games.validation import (
+    TIMER_MODES,
+    TimerSettings,
     ValidationError,
     check_can_join,
     validate_create_request,
@@ -30,6 +34,35 @@ from app.games.validation import (
 )
 
 router = APIRouter()
+
+# A clock that reached 0 is only acted on this much later, so that a move sent
+# just in time still counts.
+GRACE_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class Timing:
+    """How long the timed parts of a game take."""
+
+    vote_seconds: float = VOTE_SECONDS
+    timer_modes: Mapping[TimerMode, TimerSettings | None] = field(
+        default_factory=lambda: TIMER_MODES
+    )
+    grace_seconds: float = GRACE_SECONDS
+
+
+def get_grace_seconds() -> float:
+    return GRACE_SECONDS
+
+
+def get_timing(
+    vote_seconds: Annotated[float, Depends(get_vote_seconds)],
+    timer_modes: Annotated[
+        Mapping[TimerMode, TimerSettings | None], Depends(get_timer_modes)
+    ],
+    grace_seconds: Annotated[float, Depends(get_grace_seconds)],
+) -> Timing:
+    return Timing(vote_seconds, timer_modes, grace_seconds)
 
 
 def parse_message(text: str | None) -> dict[str, Any] | None:
@@ -80,16 +113,32 @@ class Table:
     outbox: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Expires the open vote. It belongs to the game, not to a connection.
     vote_timer: asyncio.Task[None] | None = None
+    # Acts when the running clock runs out. It belongs to the game too.
+    turn_timer: asyncio.Task[None] | None = None
+    # The `clock_epoch` the turn timer was started for.
+    turn_timer_epoch: int = 0
 
     def stop_vote_timer(self) -> None:
         if self.vote_timer is not None:
             self.vote_timer.cancel()
             self.vote_timer = None
 
+    def stop_turn_timer(self) -> None:
+        if self.turn_timer is not None:
+            self.turn_timer.cancel()
+            self.turn_timer = None
+
 
 # The timers that ran out and are still sending. No table holds them any more,
 # and the event loop does not keep its tasks alive by itself.
 _expiring: set[asyncio.Task[None]] = set()
+
+
+def _keep_expiring_task() -> None:
+    """Hold on to the running timer task once its table lets go of it."""
+    task = asyncio.current_task()
+    _expiring.add(task)
+    task.add_done_callback(_expiring.discard)
 
 
 @dataclass(frozen=True)
@@ -99,6 +148,17 @@ class PlayingRole:
     game: Game
     player: Player
     table: Table
+
+
+def _vote_notice(failed: FailedVote | None) -> dict[str, Any] | None:
+    if failed is None:
+        return None
+    return {
+        "type": "vote_failed",
+        "proposer": failed.proposer,
+        "endVotes": failed.end_votes,
+        "continueVotes": failed.continue_votes,
+    }
 
 
 # A message for one connection.
@@ -130,14 +190,14 @@ class ClientSession:
         hub: LobbyHub,
         rooms: GameRooms,
         rng: Random | None = None,
-        vote_seconds: float = VOTE_SECONDS,
+        timing: Timing | None = None,
     ) -> None:
         self._websocket = websocket
         self._registry = registry
         self._hub = hub
         self._rooms = rooms
         self._random = rng or get_random()
-        self._vote_seconds = vote_seconds
+        self._timing = timing or Timing()
         self._role: HostRole | PlayerRole | PlayingRole | None = None
 
     @property
@@ -205,10 +265,10 @@ class ClientSession:
         match = role.game.match
         failed = match.leave(role.player.name)
         if match.result is None:
-            deliveries = self._update_deliveries(role.game, failed)
+            deliveries = self._update_deliveries(role.game, _vote_notice(failed))
         else:
             deliveries = self._finish(role.game)
-        self._sync_vote_timer(role.game, role.table)
+        self._sync_timers(role.game, role.table)
         if confirmation is not None:
             deliveries.insert(0, (self._websocket, confirmation))
         await deliver(role.table.outbox, deliveries)
@@ -314,7 +374,9 @@ class ClientSession:
             game.board_width,
             game.board_height,
             self._random,
-            vote_seconds=self._vote_seconds,
+            vote_seconds=self._timing.vote_seconds,
+            timer=game.timer,
+            timer_modes=self._timing.timer_modes,
         )
         table = Table()
         for session, player in self._rooms.seats(game):
@@ -322,6 +384,7 @@ class ClientSession:
         summary = game_summary(game)
         joined = (self._websocket, {"type": "game_joined", "game": summary})
         updated = {"type": "game_updated", "game": summary}
+        self._sync_timers(game, table)
         await deliver(
             table.outbox,
             [
@@ -345,10 +408,10 @@ class ClientSession:
             await send_error(self._websocket, error.code, error.field)
             return
         # No await from the move to the delivery, so nothing can slip in between.
-        await self._publish(role.game, role.table, failed)
+        await self._publish(role.game, role.table, _vote_notice(failed))
 
     async def _publish(
-        self, game: Game, table: Table, failed: FailedVote | None
+        self, game: Game, table: Table, notice: dict[str, Any] | None
     ) -> None:
         """Tell everyone about a change to the match, ending the game if over.
 
@@ -360,13 +423,18 @@ class ClientSession:
         # The last mark is shown before the end it caused. A passed vote has no
         # move to show.
         if result is None or result.reason is EndReason.BOARD_FULL:
-            deliveries = self._update_deliveries(game, failed)
+            deliveries = self._update_deliveries(game, notice)
         if over:
             deliveries += self._finish(game)
-        self._sync_vote_timer(game, table)
+        self._sync_timers(game, table)
         await deliver(table.outbox, deliveries)
         if over:
             await self._broadcast_lobby()
+
+    def _sync_timers(self, game: Game, table: Table) -> None:
+        """Make the timers match the game. It must follow every change."""
+        self._sync_vote_timer(game, table)
+        self._sync_turn_timer(game, table)
 
     def _sync_vote_timer(self, game: Game, table: Table) -> None:
         """Keep a timer running exactly while a vote is open."""
@@ -387,13 +455,44 @@ class ClientSession:
         await asyncio.sleep(game.match.vote_seconds)
         # From here on the task sends the result, so it leaves the table: a
         # change made meanwhile must not cancel it.
-        task = asyncio.current_task()
-        _expiring.add(task)
-        task.add_done_callback(_expiring.discard)
+        _keep_expiring_task()
         table.vote_timer = None
         failed = game.match.expire_vote(vote_id)
         if failed is not None:
-            await self._publish(game, table, failed)
+            await self._publish(game, table, _vote_notice(failed))
+
+    def _sync_turn_timer(self, game: Game, table: Table) -> None:
+        """Keep a timer for the running clock, if there is one."""
+        deadline = game.match.clock_deadline()
+        if deadline is None:
+            table.stop_turn_timer()
+            return
+        epoch, seconds = deadline
+        if table.turn_timer is None or table.turn_timer_epoch != epoch:
+            table.stop_turn_timer()
+            table.turn_timer_epoch = epoch
+            delay = seconds + self._timing.grace_seconds
+            table.turn_timer = asyncio.create_task(
+                self._expire_turn(game, table, epoch, delay)
+            )
+
+    async def _expire_turn(
+        self, game: Game, table: Table, epoch: int, delay: float
+    ) -> None:
+        """Act on the running clock once it and the grace window are over.
+
+        Like `_expire_vote`, it keeps working after this connection is gone.
+        """
+        await asyncio.sleep(delay)
+        _keep_expiring_task()
+        table.turn_timer = None
+        expired = game.match.expire_clock(epoch)
+        if expired is None:
+            return
+        notice = None
+        if isinstance(expired, TimedOut):
+            notice = {"type": "turn_timed_out", "player": expired.player}
+        await self._publish(game, table, notice)
 
     def _finish(self, game: Game) -> list[Delivery]:
         """Remove a game whose match is over. Return the news for its players.
@@ -409,18 +508,12 @@ class ClientSession:
         return [(session.websocket, message) for session in sessions]
 
     def _update_deliveries(
-        self, game: Game, failed: FailedVote | None
+        self, game: Game, notice: dict[str, Any] | None
     ) -> list[Delivery]:
-        """The new state, announcing first the vote that failed, if one did."""
+        """The new state, after the notice of what caused it, if there is one."""
         states = self._state_deliveries(game, "game_state")
-        if failed is None:
+        if notice is None:
             return states
-        notice = {
-            "type": "vote_failed",
-            "proposer": failed.proposer,
-            "endVotes": failed.end_votes,
-            "continueVotes": failed.continue_votes,
-        }
         return [*((websocket, notice) for websocket, _ in states), *states]
 
     def _state_deliveries(self, game: Game, message_type: str) -> list[Delivery]:
@@ -457,14 +550,15 @@ async def game_socket(
     hub: Annotated[LobbyHub, Depends(get_lobby_hub)],
     rooms: Annotated[GameRooms, Depends(get_game_rooms)],
     rng: Annotated[Random, Depends(get_random)],
-    vote_seconds: Annotated[float, Depends(get_vote_seconds)],
+    timing: Annotated[Timing, Depends(get_timing)],
 ) -> None:
     await websocket.accept()
-    session = ClientSession(websocket, registry, hub, rooms, rng, vote_seconds)
+    session = ClientSession(websocket, registry, hub, rooms, rng, timing)
     try:
         async for text in iter_frames(websocket):
             await session.handle(parse_message(text))
     finally:
-        # A game lives only as long as its creator's connection, and a player
-        # stays in it only as long as theirs.
+        # Before the start, a game lives only as long as its creator's connection.
+        # After it, the host is an ordinary player. Every player stays in a game
+        # only as long as their own connection.
         await session.close()

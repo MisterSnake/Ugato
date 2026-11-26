@@ -4,6 +4,7 @@ import {
   BOARD_MIN_SIZE,
   MAX_PLAYERS,
   MIN_PLAYERS,
+  TIMER_LABELS,
   validateDraft,
 } from '../game/validation'
 import type {
@@ -37,6 +38,7 @@ export function CreateGameForm({
     maxPlayers: String(MIN_PLAYERS),
     boardWidth: String(BOARD_MIN_SIZE),
     boardHeight: String(BOARD_MIN_SIZE),
+    timer: 'none',
   })
 
   const result = validateDraft({
@@ -144,6 +146,23 @@ export function CreateGameForm({
           ))}
           {errorMessage('board')}
         </fieldset>
+
+        <div className="field">
+          <label htmlFor="timer">Timer</label>
+          <select
+            id="timer"
+            value={values.timer}
+            onChange={(event) => setValue('timer', event.target.value)}
+            {...errorProps('timer')}
+          >
+            {Object.entries(TIMER_LABELS).map(([mode, label]) => (
+              <option key={mode} value={mode}>
+                {label}
+              </option>
+            ))}
+          </select>
+          {errorMessage('timer')}
+        </div>
 
         <ErrorMessage code={errors.formError} />
 

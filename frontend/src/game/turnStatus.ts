@@ -9,7 +9,8 @@ export function turnStatus(state: GameState, me: string): TurnStatus {
   const { currentPlayer, phase } = state
   const isMyTurn = currentPlayer === me
   if (phase === 'choose') {
-    const text = isMyTurn ? 'Choose your U' : `${currentPlayer} is choosing a U`
+    const mine = state.chooseMsLeft === null ? 'Choose your U' : 'Choose a U'
+    const text = isMyTurn ? mine : `${currentPlayer} is choosing a U`
     return { text, isMyTurn }
   }
   return { text: isMyTurn ? 'Your turn!' : `${currentPlayer}'s turn`, isMyTurn }

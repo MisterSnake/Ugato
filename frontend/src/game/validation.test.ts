@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateDraft, validateJoinDraft } from './validation'
+import { TIMER_LABELS, validateDraft, validateJoinDraft } from './validation'
 import type { CreateGameDraft } from './validation'
 
 const validDraft: CreateGameDraft = {
@@ -9,6 +9,7 @@ const validDraft: CreateGameDraft = {
   maxPlayers: 2,
   boardWidth: 12,
   boardHeight: 10,
+  timer: 'none',
 }
 
 function validate(overrides: Partial<CreateGameDraft>) {
@@ -47,6 +48,26 @@ describe('validateDraft', () => {
 
   it.each(['pink', ''])('rejects the color %j', (color) => {
     expect(validate({ color })).toEqual({ errors: { color: 'invalid_color' } })
+  })
+
+  it.each(['none', 'slow', 'normal', 'fast'])(
+    'accepts the timer %s',
+    (timer) => {
+      expect(validate({ timer })).toHaveProperty('request.timer', timer)
+    },
+  )
+
+  it.each(['blitz', '', 'toString'])('rejects the timer %j', (timer) => {
+    expect(validate({ timer })).toEqual({ errors: { timer: 'invalid_timer' } })
+  })
+
+  it('labels every timer mode, in the order they are offered', () => {
+    expect(Object.entries(TIMER_LABELS)).toEqual([
+      ['none', 'No timer'],
+      ['slow', 'Slow 60-15'],
+      ['normal', 'Normal 30-10'],
+      ['fast', 'Fast 10-5'],
+    ])
   })
 
   it.each([2, 3, 4])('accepts %i max players', (maxPlayers) => {

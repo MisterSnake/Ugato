@@ -1,7 +1,8 @@
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from app.games.models import Color, Game, GameStatus, Player
+from app.games.models import Color, Game, GameStatus, Player, TimerMode
 
 NAME_MIN_LENGTH = 3
 NAME_MAX_LENGTH = 20
@@ -10,6 +11,21 @@ MAX_PLAYERS = 4
 DEFAULT_MAX_PLAYERS = 2
 BOARD_MIN_SIZE = 8
 BOARD_MAX_SIZE = 30
+
+
+@dataclass(frozen=True)
+class TimerSettings:
+    start_seconds: float
+    increment_seconds: float
+
+
+# The only place the values of the modes are written. None means no clock.
+TIMER_MODES: Mapping[TimerMode, TimerSettings | None] = {
+    TimerMode.NONE: None,
+    TimerMode.SLOW: TimerSettings(60, 15),
+    TimerMode.NORMAL: TimerSettings(30, 10),
+    TimerMode.FAST: TimerSettings(10, 5),
+}
 
 
 class ValidationError(Exception):
@@ -54,6 +70,12 @@ def parse_board(width: object, height: object) -> tuple[int, int]:
     raise ValidationError("board", "invalid_board")
 
 
+def parse_timer(value: object) -> TimerMode:
+    if isinstance(value, str) and value in TimerMode:
+        return TimerMode(value)
+    raise ValidationError("timer", "invalid_timer")
+
+
 def validate_create_request(payload: Mapping[str, Any]) -> Game:
     username = normalize_name(payload.get("username"), "username", "invalid_username")
     color = parse_color(payload.get("color"))
@@ -66,12 +88,14 @@ def validate_create_request(payload: Mapping[str, Any]) -> Game:
     board_width, board_height = parse_board(
         payload.get("boardWidth"), payload.get("boardHeight")
     )
+    timer = parse_timer(payload.get("timer", TimerMode.NONE))
     return Game(
         name=game_name,
         max_players=max_players,
         board_width=board_width,
         board_height=board_height,
         players=[Player(name=username, color=color)],
+        timer=timer,
     )
 
 

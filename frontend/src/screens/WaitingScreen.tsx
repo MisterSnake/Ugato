@@ -1,4 +1,5 @@
 import type { GameSummary, Role } from '../game/types'
+import { TIMER_LABELS } from '../game/validation'
 import { colorLabel } from './colorLabel'
 
 interface WaitingScreenProps {
@@ -37,6 +38,8 @@ export function WaitingScreen({ game, role, onLeave }: WaitingScreenProps) {
         </dd>
         <dt>Board</dt>
         <dd>{`${game.boardWidth} x ${game.boardHeight}`}</dd>
+        <dt>Timer</dt>
+        <dd>{TIMER_LABELS[game.timer]}</dd>
       </dl>
       <button type="button" onClick={onLeave}>
         {LEAVE_LABELS[role]}

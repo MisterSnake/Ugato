@@ -5,14 +5,20 @@ Nothing here knows about connections.
 
 import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from random import Random
 from typing import Any
 
 from app.games.board import Board, Cell, Position, Shape, find_u_candidates
-from app.games.validation import ValidationError, is_int_between
+from app.games.models import TimerMode
+from app.games.validation import (
+    TIMER_MODES,
+    TimerSettings,
+    ValidationError,
+    is_int_between,
+)
 
 
 VOTE_SECONDS = 30
@@ -54,6 +60,20 @@ class FailedVote:
     continue_votes: int
 
 
+@dataclass(frozen=True)
+class TimedOut:
+    """A turn lost to the clock."""
+
+    player: str
+
+
+@dataclass(frozen=True)
+class AutoChosen:
+    """A U chosen for a player whose choose clock ran out."""
+
+    player: str
+
+
 class Match:
     def __init__(
         self,
@@ -63,6 +83,8 @@ class Match:
         rng: Random,
         clock: Callable[[], float] = time.monotonic,
         vote_seconds: float = VOTE_SECONDS,
+        timer: TimerMode = TimerMode.NONE,
+        timer_modes: Mapping[TimerMode, TimerSettings | None] = TIMER_MODES,
     ) -> None:
         self.clock = clock
         self.vote_seconds = vote_seconds
@@ -80,10 +102,70 @@ class Match:
         # Set once the match is over.
         self.result: MatchResult | None = None
         self._turn = 0
+        self.timer = timer
+        # None, like the clocks, in an untimed match.
+        self._settings = timer_modes[timer]
+        # The seconds each player had when their clock last stopped.
+        self.clocks = (
+            None
+            if self._settings is None
+            else dict.fromkeys(self.turn_order, self._settings.start_seconds)
+        )
+        # When the clock of the current player started, while it runs.
+        self._running_since: float | None = None
+        # When the choose clock runs out, while it runs. Unused time is lost.
+        self._choose_deadline: float | None = None
+        # Changes with the running deadline, so a stale timeout can be told.
+        self.clock_epoch = 0
+        self._start_clock()
 
     @property
     def current_player(self) -> str:
         return self.turn_order[self._turn]
+
+    def time_left(self, player: str) -> float:
+        """The seconds on a player's clock right now. Only for timed matches."""
+        left = self.clocks[player]
+        if self._running_since is not None and player == self.current_player:
+            left -= self.clock() - self._running_since
+        return max(0, left)
+
+    def choose_time_left(self) -> float | None:
+        """The seconds on the choose clock right now, if it is running."""
+        if self._choose_deadline is None:
+            return None
+        return max(0, self._choose_deadline - self.clock())
+
+    def clock_deadline(self) -> tuple[int, float] | None:
+        """The epoch and the seconds left of the running clock, if one runs."""
+        if self._running_since is not None:
+            return self.clock_epoch, self.time_left(self.current_player)
+        if self._choose_deadline is not None:
+            return self.clock_epoch, self.choose_time_left()
+        return None
+
+    def expire_clock(self, epoch: int) -> TimedOut | AutoChosen | None:
+        """Act on a clock that ran out, unless it is no longer the running one.
+
+        It does not check the time: whoever calls it decides when it is due.
+        """
+        deadline = self.clock_deadline()
+        if deadline is None or deadline[0] != epoch:
+            return None
+        player = self.current_player
+        if self.phase is Phase.CHOOSE:
+            self.choose(player, 0)
+            return AutoChosen(player)
+        self._stop_clock()
+        self.clocks[player] = self._settings.start_seconds
+        self._pass_turn()
+        return TimedOut(player)
+
+    def _start_clock(self) -> None:
+        """Start the clock of the current player."""
+        if self._settings is not None:
+            self._running_since = self.clock()
+            self.clock_epoch += 1
 
     def mark(self, player: str, row: object, col: object) -> None:
         self._check_turn(player)
@@ -97,16 +179,18 @@ class Match:
             raise _move_error("cell_out_of_bounds")
         if self.board[row][col] is not None:
             raise _move_error("cell_taken")
+        self._stop_clock()
         self.board[row][col] = Cell(player)
         self.last_move = (row, col)
         candidates = find_u_candidates(self.board, row, col, player)
         if len(candidates) > 1:
             self.phase = Phase.CHOOSE
             self.candidates = candidates
+            self._start_choose_clock()
             return
         if candidates:
             self._score(player, candidates[0])
-        self._end_turn()
+        self._finish_move(player)
 
     def choose(self, player: str, index: object) -> None:
         self._check_turn(player)
@@ -115,8 +199,9 @@ class Match:
             raise _move_error("no_choice_pending")
         if not is_int_between(index, 0, len(self.candidates) - 1):
             raise _move_error("invalid_choice")
+        self._stop_clock()
         self._score(player, self.candidates[index])
-        self._end_turn()
+        self._finish_move(player)
 
     def propose_end(self, player: str) -> None:
         self._check_turn(player)
@@ -125,6 +210,7 @@ class Match:
             raise _move_error("choice_pending")
         if self.proposals_left[player] == 0:
             raise _move_error("no_proposals_left")
+        self._stop_clock()
         self._votes_opened += 1
         self.vote = Vote(
             id=self._votes_opened,
@@ -173,7 +259,35 @@ class Match:
             self.proposals_left[player] = min(
                 self.proposals_left[player] + change, MAX_END_PROPOSALS
             )
+        self._start_clock()
         return FailedVote(proposer, end_votes, continue_votes)
+
+    def _start_choose_clock(self) -> None:
+        if self._settings is not None:
+            # Half the increment, rounded up, for each candidate beyond one.
+            per_extra = math.ceil(self._settings.increment_seconds / 2)
+            seconds = per_extra * (len(self.candidates) - 1)
+            self._choose_deadline = self.clock() + seconds
+            self.clock_epoch += 1
+
+    def _stop_clock(self) -> None:
+        """Stop whichever clock is running, if one is.
+
+        The player keeps what is left on theirs. A choose clock is dropped.
+        """
+        if self._running_since is not None:
+            self.clocks[self.current_player] = self.time_left(self.current_player)
+            self._running_since = None
+            self.clock_epoch += 1
+        if self._choose_deadline is not None:
+            self._choose_deadline = None
+            self.clock_epoch += 1
+
+    def _finish_move(self, player: str) -> None:
+        """End a turn that ended with a move, which is what earns time."""
+        if self._settings is not None:
+            self.clocks[player] += self._settings.increment_seconds
+        self._end_turn()
 
     def _score(self, player: str, u: Shape) -> None:
         for row, col in u:
@@ -186,9 +300,14 @@ class Match:
         if all(cell is not None for row in self.board for cell in row):
             self._finish_by_score(EndReason.BOARD_FULL)
             return
+        self._pass_turn()
+
+    def _pass_turn(self) -> None:
+        """Give the turn to the next remaining player and start their clock."""
         self._turn = (self._turn + 1) % len(self.turn_order)
         while self.current_player in self.left:
             self._turn = (self._turn + 1) % len(self.turn_order)
+        self._start_clock()
 
     def _finish_by_score(self, reason: EndReason) -> None:
         """The players still in with the highest score win."""
@@ -206,11 +325,13 @@ class Match:
         self.left.add(player)
         remaining = self.remaining_players()
         if len(remaining) == 1:
+            self._stop_clock()
             self.vote = None
             self.result = MatchResult(remaining, EndReason.LAST_PLAYER)
         elif player == self.current_player:
             # A pending choice is dropped, so it scores nothing. An open vote
             # was proposed by this player, so it is cancelled.
+            self._stop_clock()
             self.vote = None
             self._end_turn()
         elif self.vote is not None:
@@ -239,6 +360,9 @@ def match_state(match: Match, viewer: str) -> dict[str, Any]:
         "lastMove": None if match.last_move is None else _position(match.last_move),
         "endProposalsLeft": dict(match.proposals_left),
         "vote": None if match.vote is None else _vote_state(match, viewer),
+        "timer": match.timer.value,
+        "clocks": _clocks_state(match),
+        "chooseMsLeft": _milliseconds(match.choose_time_left()),
     }
     if match.phase is Phase.CHOOSE and viewer == match.current_player:
         state["candidates"] = [
@@ -258,6 +382,19 @@ def _vote_state(match: Match, viewer: str) -> dict[str, Any]:
         "secondsLeft": max(0, math.ceil(vote.deadline - match.clock())),
         "yourVote": None if own is None else "end" if own else "continue",
     }
+
+
+def _clocks_state(match: Match) -> dict[str, int] | None:
+    if match.clocks is None:
+        return None
+    return {
+        player: _milliseconds(match.time_left(player))
+        for player in match.turn_order
+    }
+
+
+def _milliseconds(seconds: float | None) -> int | None:
+    return None if seconds is None else round(seconds * 1000)
 
 
 def game_over_payload(match: Match) -> dict[str, Any]:
@@ -294,3 +431,7 @@ def get_random() -> Random:
 
 def get_vote_seconds() -> float:
     return VOTE_SECONDS
+
+
+def get_timer_modes() -> Mapping[TimerMode, TimerSettings | None]:
+    return TIMER_MODES

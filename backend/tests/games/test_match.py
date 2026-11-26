@@ -1,4 +1,5 @@
 import copy
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -6,14 +7,17 @@ import pytest
 
 from app.games.board import Cell
 from app.games.match import (
+    AutoChosen,
     EndReason,
     FailedVote,
     Match,
     MatchResult,
     Phase,
+    TimedOut,
     game_over_payload,
     match_state,
 )
+from app.games.models import TimerMode
 from app.games.validation import ValidationError
 from tests.games.boards import parse_board
 from tests.games.randomness import FixedOrder
@@ -345,6 +349,9 @@ def test_the_state_describes_the_whole_match() -> None:
         "lastMove": {"row": 0, "col": 1},
         "endProposalsLeft": {"R": 2, "B": 2, "G": 2},
         "vote": None,
+        "timer": "none",
+        "clocks": None,
+        "chooseMsLeft": None,
     }
 
 
@@ -796,3 +803,444 @@ def test_the_game_over_payload_reports_a_vote() -> None:
     match.vote_end("B", True)
 
     assert game_over_payload(match)["reason"] == "vote"
+
+
+def timed_match(
+    mode: TimerMode = TimerMode.NORMAL, *order: str
+) -> tuple[Match, FakeClock]:
+    """A timed match on an empty 12 x 8 board, with a fake clock."""
+    order = order or ("Ana", "Esteban", "Luis")
+    clock = FakeClock()
+    match = Match(order, 12, 8, FixedOrder(*order), clock=clock, timer=mode)
+    return match, clock
+
+
+def times(match: Match) -> dict[str, float]:
+    return {player: match.time_left(player) for player in match.turn_order}
+
+
+def test_every_player_starts_with_the_time_of_the_mode() -> None:
+    match, _ = timed_match()
+
+    assert times(match) == {"Ana": 30, "Esteban": 30, "Luis": 30}
+
+
+def test_only_the_clock_of_the_first_player_runs_at_the_start() -> None:
+    match, clock = timed_match()
+
+    clock.now += 4
+
+    assert times(match) == {"Ana": 26, "Esteban": 30, "Luis": 30}
+
+
+def test_a_clock_never_shows_less_than_zero() -> None:
+    match, clock = timed_match()
+
+    clock.now += 31
+
+    assert match.time_left("Ana") == 0
+
+
+def test_an_untimed_match_has_no_clocks() -> None:
+    match, _ = voting_match()
+
+    assert match.clocks is None
+
+
+def test_a_finished_turn_takes_the_time_used_and_adds_the_increment() -> None:
+    match, clock = timed_match()
+
+    clock.now += 4
+    match.mark("Ana", 0, 0)
+
+    assert match.time_left("Ana") == 36
+
+
+def test_the_next_player_clock_starts_after_a_move() -> None:
+    match, clock = timed_match()
+    clock.now += 4
+    match.mark("Ana", 0, 0)
+
+    clock.now += 7
+
+    assert times(match) == {"Ana": 36, "Esteban": 23, "Luis": 30}
+
+
+def test_a_mark_that_scores_one_u_adds_the_increment() -> None:
+    match, clock = timed_match()
+    for row, col in [(0, 0), (1, 0), (1, 1), (1, 2)]:
+        match.board[row][col] = Cell("Ana")
+
+    clock.now += 4
+    match.mark("Ana", 0, 2)
+
+    assert match.scores["Ana"] == 1
+    assert match.time_left("Ana") == 36
+
+
+def test_a_clock_has_no_upper_limit() -> None:
+    match, clock = timed_match(TimerMode.SLOW)
+    match.clocks["Ana"] = 120
+
+    clock.now += 3
+    match.mark("Ana", 0, 0)
+
+    assert match.time_left("Ana") == 132
+
+
+def test_a_rejected_mark_leaves_the_clock_running() -> None:
+    match, clock = timed_match()
+    clock.now += 4
+
+    with pytest.raises(ValidationError):
+        match.mark("Ana", 99, 0)
+    clock.now += 1
+
+    assert match.time_left("Ana") == 25
+
+
+def test_filling_the_board_stops_every_clock() -> None:
+    match, clock = timed_match(TimerMode.NORMAL, "R", "B")
+    match.board = parse_board("B.")
+    match.mark("R", 0, 1)
+    stopped = times(match)
+
+    clock.now += 100
+
+    assert match.result is not None
+    assert times(match) == stopped
+
+
+def proposal_at_21_seconds() -> tuple[Match, FakeClock]:
+    """A two-player timed match where the proposer has used 9 of 30 seconds."""
+    match, clock = timed_match(TimerMode.NORMAL, "Esteban", "Ana")
+    clock.now += 9
+    match.propose_end("Esteban")
+    return match, clock
+
+
+def test_an_open_vote_freezes_the_proposer_clock() -> None:
+    match, clock = proposal_at_21_seconds()
+
+    clock.now += 12
+
+    assert match.time_left("Esteban") == 21
+
+
+@pytest.mark.parametrize("expires", [False, True])
+def test_a_failed_vote_resumes_the_proposer_clock(expires: bool) -> None:
+    match, clock = proposal_at_21_seconds()
+    clock.now += 12
+
+    if expires:
+        match.expire_vote(match.vote.id)
+    else:
+        match.vote_end("Ana", False)
+    clock.now += 1
+
+    assert match.time_left("Esteban") == 20
+
+
+def test_a_passed_vote_leaves_no_clock_running() -> None:
+    match, clock = proposal_at_21_seconds()
+    match.vote_end("Ana", True)
+
+    clock.now += 5
+
+    assert match.result is not None
+    assert times(match) == {"Esteban": 21, "Ana": 30}
+
+
+def luis_leaves_before_ana() -> tuple[Match, FakeClock]:
+    """It is Luis's turn, 6 seconds in, and Ana, who is next, has 25 seconds."""
+    match, clock = timed_match(TimerMode.NORMAL, "Luis", "Ana", "Esteban")
+    match.clocks["Ana"] = 25
+    clock.now += 6
+    return match, clock
+
+
+def test_the_next_clock_starts_when_the_current_player_leaves() -> None:
+    match, clock = luis_leaves_before_ana()
+
+    match.leave("Luis")
+    clock.now += 3
+
+    assert match.current_player == "Ana"
+    assert match.time_left("Ana") == 22
+
+
+def test_a_player_who_leaves_gains_no_increment() -> None:
+    match, clock = luis_leaves_before_ana()
+
+    match.leave("Luis")
+    clock.now += 3
+
+    assert match.time_left("Luis") == 24
+
+
+def test_another_player_leaving_does_not_disturb_the_running_clock() -> None:
+    match, clock = luis_leaves_before_ana()
+
+    match.leave("Esteban")
+    clock.now += 4
+
+    assert match.time_left("Luis") == 20
+
+
+def test_the_clocks_stop_when_only_one_player_is_left() -> None:
+    match, clock = timed_match(TimerMode.NORMAL, "Ana", "Esteban")
+    clock.now += 6
+
+    match.leave("Esteban")
+    clock.now += 10
+
+    assert times(match) == {"Ana": 24, "Esteban": 30}
+
+
+def test_the_deadline_is_the_time_left_to_the_current_player() -> None:
+    match, clock = timed_match()
+    clock.now += 4
+
+    assert match.clock_deadline() == (match.clock_epoch, 26)
+
+
+def new_epoch(match: Match, change: Callable[[], object]) -> bool:
+    before = match.clock_epoch
+    change()
+    return match.clock_epoch != before
+
+
+def test_the_epoch_changes_when_a_turn_starts() -> None:
+    match, _ = timed_match()
+
+    assert new_epoch(match, lambda: match.mark("Ana", 0, 0))
+    assert match.clock_deadline() == (match.clock_epoch, 30)
+
+
+def test_the_epoch_changes_when_the_choose_phase_starts() -> None:
+    match, _ = timed_match(TimerMode.NORMAL, "R", "B")
+    match.board = parse_board(TWO_US)
+
+    assert new_epoch(match, lambda: match.mark("R", 1, 2))
+    assert match.phase is Phase.CHOOSE
+
+
+def test_the_epoch_changes_when_a_vote_opens_and_closes() -> None:
+    match, _ = timed_match()
+
+    assert new_epoch(match, lambda: match.propose_end("Ana"))
+    assert match.clock_deadline() is None
+    match.vote_end("Esteban", False)
+    assert new_epoch(match, lambda: match.vote_end("Luis", False))
+    assert match.clock_deadline() == (match.clock_epoch, 30)
+
+
+def test_the_epoch_changes_when_the_current_player_leaves() -> None:
+    match, _ = timed_match()
+
+    assert new_epoch(match, lambda: match.leave("Ana"))
+
+
+def test_an_untimed_match_has_no_deadline() -> None:
+    match, _ = voting_match()
+
+    assert match.clock_deadline() is None
+
+
+def test_a_finished_match_has_no_deadline() -> None:
+    match, _ = timed_match(TimerMode.NORMAL, "Ana", "Esteban")
+
+    match.leave("Esteban")
+
+    assert match.clock_deadline() is None
+
+
+def expire(match: Match) -> object:
+    """Run out the clock that is running now."""
+    return match.expire_clock(match.clock_epoch)
+
+
+def test_a_timeout_passes_the_turn_without_a_mark() -> None:
+    match, clock = timed_match(TimerMode.FAST)
+    clock.now += 10.5
+
+    assert expire(match) == TimedOut("Ana")
+
+    assert all(cell is None for row in match.board for cell in row)
+    assert match.last_move is None
+    assert (match.current_player, match.phase) == ("Esteban", "mark")
+
+
+@pytest.mark.parametrize("banked", [2, 200])
+def test_a_timeout_resets_the_clock_to_the_starting_time(banked: int) -> None:
+    match, clock = timed_match(TimerMode.SLOW)
+    match.clocks["Ana"] = banked
+    clock.now += banked + 0.5
+
+    expire(match)
+
+    assert match.time_left("Ana") == 60
+
+
+def test_the_next_clock_starts_after_a_timeout() -> None:
+    match, clock = timed_match()
+    clock.now += 30
+    expire(match)
+
+    clock.now += 4
+
+    assert times(match) == {"Ana": 30, "Esteban": 26, "Luis": 30}
+
+
+def test_a_timeout_skips_a_player_who_left() -> None:
+    match, _ = timed_match()
+    match.leave("Esteban")
+
+    expire(match)
+
+    assert match.current_player == "Luis"
+
+
+def test_a_stale_timeout_changes_nothing() -> None:
+    match, clock = timed_match()
+    stale = match.clock_epoch
+    match.mark("Ana", 0, 0)
+    clock.now += 3
+
+    assert match.expire_clock(stale) is None
+
+    assert match.current_player == "Esteban"
+    assert times(match) == {"Ana": 40, "Esteban": 27, "Luis": 30}
+
+
+def test_no_clock_runs_out_during_a_vote() -> None:
+    match, _ = timed_match()
+    match.propose_end("Ana")
+
+    assert expire(match) is None
+    assert match.current_player == "Ana"
+
+
+# Marking (1, 3) completes three Us.
+THREE_US = "......./.R.?RR./.RRRRR."
+MARKS = {TWO_US: (1, 2), THREE_US: (1, 3)}
+
+
+def timed_choice(
+    mode: TimerMode, grid: str = TWO_US, banked: float | None = None
+) -> tuple[Match, FakeClock]:
+    """A timed match where "R" has just marked into a choice."""
+    match, clock = timed_match(mode, "R", "B")
+    match.board = parse_board(grid)
+    if banked is not None:
+        match.clocks["R"] = banked
+    match.mark("R", *MARKS[grid])
+    assert match.phase is Phase.CHOOSE
+    return match, clock
+
+
+@pytest.mark.parametrize(
+    ("mode", "grid", "seconds"),
+    [
+        pytest.param(TimerMode.NORMAL, TWO_US, 5, id="two-on-normal"),
+        pytest.param(TimerMode.SLOW, THREE_US, 16, id="three-on-slow"),
+        pytest.param(TimerMode.FAST, TWO_US, 3, id="two-on-fast"),
+    ],
+)
+def test_the_choose_clock_depends_on_the_mode_and_the_candidates(
+    mode: TimerMode, grid: str, seconds: int
+) -> None:
+    match, _ = timed_choice(mode, grid)
+
+    assert len(match.candidates) == (3 if grid == THREE_US else 2)
+    assert match.choose_time_left() == seconds
+    assert match.clock_deadline() == (match.clock_epoch, seconds)
+
+
+def test_the_player_clock_stops_while_choosing() -> None:
+    match, clock = timed_choice(TimerMode.NORMAL, banked=18)
+
+    clock.now += 2
+
+    assert match.time_left("R") == 18
+    assert match.choose_time_left() == 3
+
+
+def test_unused_choose_time_is_lost() -> None:
+    match, clock = timed_choice(TimerMode.NORMAL, THREE_US, banked=18)
+    assert match.choose_time_left() == 10
+    clock.now += 2
+
+    match.choose("R", 0)
+
+    assert match.time_left("R") == 28
+    assert match.choose_time_left() is None
+    assert match.clock_deadline() == (match.clock_epoch, 30)
+
+
+def test_there_is_no_choose_clock_in_an_untimed_match() -> None:
+    match = choosing_match()
+
+    assert match.choose_time_left() is None
+    assert match.clock_deadline() is None
+
+
+def test_leaving_during_a_choice_drops_the_choose_clock() -> None:
+    match, clock = timed_match(TimerMode.NORMAL, "R", "B", "G")
+    match.board = parse_board(TWO_US)
+    match.mark("R", 1, 2)
+
+    match.leave("R")
+    clock.now += 3
+
+    assert match.choose_time_left() is None
+    assert match.clock_deadline() == (match.clock_epoch, 27)
+    assert match.current_player == "B"
+
+
+def test_the_first_candidate_is_chosen_when_the_choose_clock_runs_out() -> None:
+    match, clock = timed_choice(TimerMode.FAST, banked=6)
+    match.scores["R"] = 1
+    first = set(match.candidates[0])
+    clock.now += 3.5
+
+    assert expire(match) == AutoChosen("R")
+
+    assert disabled_cells(match) == first
+    assert match.scores == {"R": 2, "B": 0}
+    assert match.time_left("R") == 11
+    assert (match.current_player, match.phase) == ("B", "mark")
+    assert match.candidates == []
+    assert match.choose_time_left() is None
+
+
+def clock_fields(match: Match) -> tuple[object, object, object]:
+    state = match_state(match, match.turn_order[0])
+    return state["timer"], state["clocks"], state["chooseMsLeft"]
+
+
+def test_the_state_has_the_clocks_in_milliseconds_as_of_now() -> None:
+    match, clock = timed_match(TimerMode.NORMAL, "Ana", "Esteban")
+
+    clock.now += 4.0004
+
+    assert clock_fields(match) == (
+        "normal",
+        {"Ana": 26000, "Esteban": 30000},
+        None,
+    )
+    assert all(type(ms) is int for ms in clock_fields(match)[1].values())
+
+
+def test_the_state_has_the_choose_clock_while_it_runs() -> None:
+    match, clock = timed_choice(TimerMode.NORMAL, banked=18)
+
+    clock.now += 1.5
+
+    assert clock_fields(match) == ("normal", {"R": 18000, "B": 30000}, 3500)
+
+
+def test_the_state_of_an_untimed_match_has_no_clocks() -> None:
+    match, _ = voting_match()
+
+    assert clock_fields(match) == ("none", None, None)

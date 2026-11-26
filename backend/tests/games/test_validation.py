@@ -236,3 +236,17 @@ def test_free_name_and_color_can_join_a_game_with_room() -> None:
     game = make_joinable_game()
     check_can_join(game, Player("Luis", Color.GREEN))
     assert len(game.players) == 2
+
+
+@pytest.mark.parametrize("timer", ["none", "slow", "normal", "fast"])
+def test_allowed_timer_is_accepted(timer: str) -> None:
+    assert validate_create_request(make_payload(timer=timer)).timer == timer
+
+
+def test_timer_defaults_to_none_when_missing() -> None:
+    assert validate_create_request(make_payload()).timer == "none"
+
+
+@pytest.mark.parametrize("timer", ["blitz", "", 1, None, ["fast"]])
+def test_unknown_timer_is_rejected(timer: object) -> None:
+    assert_rejected(make_payload(timer=timer), "timer", "invalid_timer")

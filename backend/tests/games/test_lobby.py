@@ -3,7 +3,7 @@ from typing import Any
 
 from app.games.lobby import LobbyHub, game_summary, get_lobby_hub, lobby_snapshot
 from app.games.match import Match
-from app.games.models import Color, Game, Player
+from app.games.models import Color, Game, Player, TimerMode
 from app.games.registry import GameRegistry
 from tests.games.randomness import FixedOrder
 
@@ -25,6 +25,7 @@ def summary(name: str) -> dict[str, object]:
         "maxPlayers": 2,
         "boardWidth": 12,
         "boardHeight": 10,
+        "timer": "none",
         "players": [{"name": "Esteban", "color": "red"}],
     }
 
@@ -142,6 +143,13 @@ def test_a_started_game_lists_only_the_players_still_in_it() -> None:
         {"name": "Luis", "color": "green"},
         {"name": "Ana", "color": "blue"},
     ]
+
+
+def test_the_summary_has_the_timer_mode_of_the_game() -> None:
+    game = make_game("Partida 1")
+    game.timer = TimerMode.NORMAL
+
+    assert game_summary(game)["timer"] == "normal"
 
 
 def listed_order(registry: GameRegistry) -> list[str]:
