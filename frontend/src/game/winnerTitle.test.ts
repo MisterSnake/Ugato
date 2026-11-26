@@ -22,3 +22,16 @@ describe('winnerTitle', () => {
     })
   })
 })
+
+describe('winnerTitle after a vote', () => {
+  it.each([
+    [['Esteban'], 'Esteban wins!'],
+    [['Ana'], 'You win!'],
+    [['Esteban', 'Ana'], 'Draw between Esteban and Ana'],
+  ])('keeps the title for the winners %o and says why', (winners, title) => {
+    expect(winnerTitle({ winners, reason: 'vote' }, 'Ana')).toEqual({
+      title,
+      detail: 'The players voted to end the game.',
+    })
+  })
+})

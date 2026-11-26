@@ -6,6 +6,7 @@ import type {
   JoinGameRequest,
   ServerError,
   ServerMessage,
+  VoteFailed,
 } from './types'
 
 /** The part of the browser WebSocket this client uses. */
@@ -29,6 +30,7 @@ export interface GameSocketEvents {
   game_started: GameState
   game_state: GameState
   game_over: GameOver
+  vote_failed: VoteFailed
   games_list: GameSummary[]
   error: ServerError
   close: { intentional: boolean }
@@ -46,6 +48,8 @@ export interface GameSocket {
   leave(): void
   markCell(row: number, col: number): void
   chooseU(index: number): void
+  proposeEnd(): void
+  voteEnd(end: boolean): void
   close(): void
   on<E extends keyof GameSocketEvents>(
     event: E,
@@ -68,6 +72,7 @@ export function createGameSocket(
     game_started: [],
     game_state: [],
     game_over: [],
+    vote_failed: [],
     games_list: [],
     error: [],
     close: [],
@@ -115,6 +120,9 @@ export function createGameSocket(
     } else if (message.type === 'game_over') {
       const { type: _type, ...gameOver } = message
       emit('game_over', gameOver)
+    } else if (message.type === 'vote_failed') {
+      const { type: _type, ...failed } = message
+      emit('vote_failed', failed)
     } else if (message.type === 'game_closed') {
       emit('game_closed', undefined)
     } else if (message.type === 'games_list') {
@@ -151,6 +159,12 @@ export function createGameSocket(
     },
     chooseU(index) {
       send({ type: 'choose_u', index })
+    },
+    proposeEnd() {
+      send({ type: 'propose_end' })
+    },
+    voteEnd(end) {
+      send({ type: 'vote_end', end })
     },
     close,
     on(event, handler) {

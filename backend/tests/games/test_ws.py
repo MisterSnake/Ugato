@@ -8,7 +8,7 @@ from starlette.testclient import WebSocketTestSession
 
 from app.games.board import Cell
 from app.games.lobby import LobbyHub, get_lobby_hub
-from app.games.match import get_random
+from app.games.match import get_random, get_vote_seconds
 from app.games.models import Color, Game, Player
 from app.games.registry import GameRegistry, get_registry
 from app.games.rooms import GameRooms, get_game_rooms
@@ -863,6 +863,8 @@ def empty_state(*order: str) -> dict[str, Any]:
         "scores": dict.fromkeys(order, 0),
         "leftPlayers": [],
         "lastMove": None,
+        "endProposalsLeft": dict.fromkeys(order, 2),
+        "vote": None,
     }
 
 
@@ -1084,13 +1086,15 @@ def test_a_mark_without_a_started_game_is_rejected(client: TestClient) -> None:
 class StallingSocket(RecordingSocket):
     """Holds back its first `game_state` until it is released."""
 
+    held_type = "game_state"
+
     def __init__(self) -> None:
         super().__init__()
         self.stalled = asyncio.Event()
         self.release = asyncio.Event()
 
     async def send_json(self, message: Any) -> None:
-        if message["type"] == "game_state" and not self.stalled.is_set():
+        if message["type"] == self.held_type and not self.stalled.is_set():
             self.stalled.set()
             await self.release.wait()
         await super().send_json(message)
@@ -1417,3 +1421,460 @@ def test_the_last_player_left_wins_and_the_game_is_removed(
         assert registry.list() == []
         assert pending_messages(watcher) == [listing()]
         assert_free_after_game_over(client, host)
+
+
+def test_the_configured_vote_duration_reaches_the_match(
+    client: TestClient, registry: GameRegistry
+) -> None:
+    app.dependency_overrides[get_vote_seconds] = lambda: 5
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_duel(host, ana)
+
+        assert registry.list()[0].match.vote_seconds == 5
+
+
+def test_a_vote_lasts_thirty_seconds_by_default() -> None:
+    assert get_vote_seconds() == 30
+
+
+PROPOSE = {"type": "propose_end"}
+
+
+def vote_end(end: object) -> dict[str, Any]:
+    return {"type": "vote_end", "end": end}
+
+
+def test_a_proposal_sends_the_open_vote_to_every_player(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        start_duel(host, ana)
+        subscribe(watcher)
+
+        ana.send_json(PROPOSE)
+
+        for socket, own_vote in ((ana, "end"), (host, None)):
+            vote = only_state(socket)["vote"]
+            assert (vote["proposer"], vote["voted"], vote["total"]) == ("Ana", 1, 2)
+            assert vote["yourVote"] == own_vote
+        assert pending_messages(watcher) == []
+
+
+def test_a_vote_that_stays_open_is_sent_to_every_player(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_trio(host, ana, luis)
+        make_move(ana, [host, luis], PROPOSE)
+
+        luis.send_json(vote_end(False))
+
+        for socket in (host, ana, luis):
+            vote = only_state(socket)["vote"]
+            assert (vote["voted"], vote["total"]) == (2, 3)
+
+
+@pytest.mark.parametrize(
+    ("proposed", "sender", "message", "code"),
+    [
+        (False, "host", PROPOSE, "not_your_turn"),
+        (True, "ana", PROPOSE, "vote_pending"),
+        (True, "ana", mark(0, 0), "vote_pending"),
+        (True, "ana", choose(0), "vote_pending"),
+        (False, "host", vote_end(True), "no_vote_pending"),
+        (True, "ana", vote_end(False), "proposer_cannot_vote"),
+        (True, "host", vote_end("yes"), "invalid_vote"),
+        (True, "host", {"type": "vote_end"}, "invalid_vote"),
+    ],
+)
+def test_a_rejected_vote_message_is_only_reported_to_its_sender(
+    client: TestClient,
+    proposed: bool,
+    sender: str,
+    message: dict[str, Any],
+    code: str,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_duel(host, ana)
+        if proposed:
+            make_move(ana, [host], PROPOSE)
+        sockets = {"host": host, "ana": ana}
+
+        assert request(sockets.pop(sender), message) == [
+            {"type": "error", "code": code}
+        ]
+        (other,) = sockets.values()
+        assert pending_messages(other) == []
+
+
+def test_a_second_vote_is_rejected_over_the_socket(client: TestClient) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_trio(host, ana, luis)
+        make_move(ana, [host, luis], PROPOSE)
+        make_move(luis, [host, ana], vote_end(False))
+
+        assert request(luis, vote_end(True)) == [
+            {"type": "error", "code": "already_voted"}
+        ]
+        assert pending_messages(host) == []
+
+
+def test_a_proposal_during_a_choice_is_rejected_over_the_socket(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        prepare_two_us(host, ana)
+        make_move(ana, [host], mark(1, 2))
+
+        assert request(ana, PROPOSE) == [{"type": "error", "code": "choice_pending"}]
+        assert pending_messages(host) == []
+
+
+def test_a_proposal_without_attempts_is_rejected_over_the_socket(
+    client: TestClient, registry: GameRegistry
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_duel(host, ana)
+        registry.list()[0].match.proposals_left["Ana"] = 0
+
+        assert request(ana, PROPOSE) == [
+            {"type": "error", "code": "no_proposals_left"}
+        ]
+        assert pending_messages(host) == []
+
+
+@pytest.mark.parametrize("message", [PROPOSE, vote_end(True)])
+def test_a_vote_message_without_a_started_game_is_rejected(
+    client: TestClient, message: dict[str, Any]
+) -> None:
+    assert_not_started(client, message)
+
+
+def assert_vote_failed(
+    socket: WebSocketTestSession, proposer: str, end: int, keep: int
+) -> dict[str, Any]:
+    """The notice and then the state without a vote. Return that state."""
+    failed, updated = pending_messages(socket)
+    assert failed == {
+        "type": "vote_failed",
+        "proposer": proposer,
+        "endVotes": end,
+        "continueVotes": keep,
+    }
+    assert updated["type"] == "game_state"
+    assert updated["state"]["vote"] is None
+    return updated["state"]
+
+
+def test_a_failed_vote_is_announced_and_the_turn_goes_on(
+    client: TestClient,
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_duel(host, ana)
+        make_move(ana, [host], PROPOSE)
+
+        host.send_json(vote_end(False))
+
+        for socket in (host, ana):
+            state = assert_vote_failed(socket, "Ana", 1, 1)
+            assert (state["currentPlayer"], state["phase"]) == ("Ana", "mark")
+            assert state["endProposalsLeft"] == {"Ana": 1, "Esteban": 2}
+        make_move(ana, [host], mark(0, 0))
+
+
+def test_a_passed_vote_ends_and_removes_the_game(
+    client: TestClient, registry: GameRegistry
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        start_duel(host, ana)
+        make_move(ana, [host], PROPOSE)
+        subscribe(watcher)
+
+        host_messages = request(host, vote_end(True))
+        ana_messages = pending_messages(ana)
+
+        # No `game_state` comes first: there is no move to show.
+        for messages in (host_messages, ana_messages):
+            assert types_of(messages) == ["game_over"]
+        assert host_messages == ana_messages
+        assert host_messages[0]["reason"] == "vote"
+        assert host_messages[0]["winners"] == ["Ana", "Esteban"]
+        assert registry.list() == []
+        assert pending_messages(watcher) == [listing()]
+        assert_free_after_game_over(client, ana)
+
+
+@pytest.mark.parametrize("disconnects", [False, True])
+def test_a_leaving_voter_can_make_the_vote_fail_over_the_socket(
+    client: TestClient, disconnects: bool
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_trio(host, ana, luis)
+        make_move(ana, [host, luis], PROPOSE)
+        make_move(host, [ana, luis], vote_end(False))
+
+        if disconnects:
+            disconnect(luis)
+        else:
+            assert request(luis, LEAVE) == [GAME_LEFT]
+
+        for socket in (host, ana):
+            assert_vote_failed(socket, "Ana", 1, 1)
+
+
+def test_a_leaving_voter_can_make_the_vote_pass_over_the_socket(
+    client: TestClient, registry: GameRegistry
+) -> None:
+    order = FixedOrder("Ana", "Esteban", "Luis", "Pia")
+    app.dependency_overrides[get_random] = lambda: order
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+        client.websocket_connect("/api/ws") as pia,
+    ):
+        request(host, create_message(maxPlayers=4))
+        request(ana, join_message())
+        request(luis, join_message(**LUIS_JOINS))
+        request(pia, join_message(username="Pia", color="yellow"))
+        for socket in (host, ana, luis):
+            pending_messages(socket)
+        make_move(ana, [host, luis, pia], PROPOSE)
+        make_move(host, [ana, luis, pia], vote_end(True))
+        make_move(luis, [ana, host, pia], vote_end(False))
+
+        disconnect(luis)
+
+        for socket in (ana, host, pia):
+            (over,) = pending_messages(socket)
+            assert (over["type"], over["reason"]) == ("game_over", "vote")
+        assert registry.list() == []
+
+
+def receive_types(socket: WebSocketTestSession, count: int) -> list[Any]:
+    """Block until `count` messages arrive, so no test has to sleep."""
+    return [socket.receive_json() for _ in range(count)]
+
+
+def test_a_vote_nobody_answers_fails_when_time_runs_out(
+    client: TestClient,
+) -> None:
+    app.dependency_overrides[get_vote_seconds] = lambda: 0.05
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_trio(host, ana, luis)
+
+        # Not read with a probe: the expiry could arrive before its reply.
+        ana.send_json(PROPOSE)
+
+        for socket in (host, ana, luis):
+            opened, failed, updated = receive_types(socket, 3)
+            assert opened["state"]["vote"]["proposer"] == "Ana"
+            assert failed == {
+                "type": "vote_failed",
+                "proposer": "Ana",
+                "endVotes": 1,
+                "continueVotes": 2,
+            }
+            assert updated["type"] == "game_state"
+            assert updated["state"]["vote"] is None
+
+
+def test_the_proposer_keeps_the_turn_after_the_vote_expires(
+    client: TestClient,
+) -> None:
+    app.dependency_overrides[get_vote_seconds] = lambda: 0.05
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_duel(host, ana)
+        ana.send_json(PROPOSE)
+        for socket in (host, ana):
+            state = receive_types(socket, 3)[-1]["state"]
+            assert (state["currentPlayer"], state["phase"]) == ("Ana", "mark")
+            assert state["endProposalsLeft"] == {"Ana": 1, "Esteban": 2}
+
+        make_move(ana, [host], mark(0, 0))
+
+
+class Trio:
+    """A three-player game driven without a server. "Ana" moves first."""
+
+    def __init__(
+        self, ana_socket: RecordingSocket | None = None, vote_seconds: float = 30
+    ) -> None:
+        self.registry = GameRegistry()
+        hub, rooms = LobbyHub(), GameRooms()
+        self.sockets = {
+            "Esteban": RecordingSocket(),
+            "Ana": ana_socket or RecordingSocket(),
+            "Luis": RecordingSocket(),
+        }
+        self.sessions = {
+            name: ClientSession(
+                socket, self.registry, hub, rooms, TURN_ORDER, vote_seconds
+            )
+            for name, socket in self.sockets.items()
+        }
+
+    async def start(self) -> None:
+        await self.sessions["Esteban"].handle(create_message(maxPlayers=3))
+        await self.sessions["Ana"].handle(join_message())
+        await self.sessions["Luis"].handle(join_message(**LUIS_JOINS))
+
+    async def send(self, name: str, message: dict[str, Any]) -> None:
+        await self.sessions[name].handle(message)
+
+    def vote_timer(self) -> asyncio.Task[None] | None:
+        return self.sessions["Luis"].table.vote_timer
+
+    def sent_counts(self) -> list[int]:
+        return [len(socket.sent) for socket in self.sockets.values()]
+
+
+async def settle_tasks() -> None:
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [
+        pytest.param([("Esteban", vote_end(True))], id="vote-passes"),
+        pytest.param(
+            [("Esteban", vote_end(False)), ("Luis", vote_end(False))],
+            id="vote-fails",
+        ),
+        pytest.param([("Ana", LEAVE)], id="proposer-leaves"),
+        pytest.param(
+            [("Esteban", vote_end(False)), ("Luis", LEAVE)],
+            id="leaving-voter-settles",
+        ),
+        pytest.param([("Esteban", LEAVE), ("Ana", LEAVE)], id="game-ends"),
+    ],
+)
+def test_closing_a_vote_early_cancels_its_timer(
+    actions: list[tuple[str, dict[str, Any]]],
+) -> None:
+    async def scenario() -> None:
+        game = Trio()
+        await game.start()
+        table = game.sessions["Luis"].table
+        await game.send("Ana", PROPOSE)
+        timer = table.vote_timer
+        assert not timer.done()
+
+        for name, message in actions:
+            await game.send(name, message)
+        sent = game.sent_counts()
+        await settle_tasks()
+
+        assert timer.cancelled()
+        assert table.vote_timer is None
+        assert game.sent_counts() == sent
+
+    asyncio.run(scenario())
+
+
+def test_a_vote_that_stays_open_keeps_its_timer() -> None:
+    async def scenario() -> None:
+        game = Trio()
+        await game.start()
+        await game.send("Ana", PROPOSE)
+        timer = game.vote_timer()
+
+        await game.send("Esteban", vote_end(False))
+        await settle_tasks()
+
+        assert game.vote_timer() is timer and not timer.done()
+
+    asyncio.run(scenario())
+
+
+def test_each_new_vote_gets_its_own_timer() -> None:
+    async def scenario() -> None:
+        game = Trio()
+        await game.start()
+        timers = []
+        for _ in range(2):
+            await game.send("Ana", PROPOSE)
+            timers.append(game.vote_timer())
+            await game.send("Esteban", vote_end(False))
+            await game.send("Luis", vote_end(False))
+
+        assert timers[0] is not timers[1]
+
+    asyncio.run(scenario())
+
+
+class StallingNoticeSocket(StallingSocket):
+    """Holds back its first `vote_failed` until it is released."""
+
+    held_type = "vote_failed"
+
+
+def test_a_game_ending_during_an_expiry_does_not_cut_off_its_messages() -> None:
+    async def scenario() -> None:
+        slow = StallingNoticeSocket()
+        game = Trio(ana_socket=slow, vote_seconds=0.01)
+        await game.start()
+        await game.send("Ana", PROPOSE)
+        # The expiry is now stuck sending to "Ana", the second to be served.
+        await asyncio.wait_for(slow.stalled.wait(), timeout=5)
+
+        async def leave_until_the_game_ends() -> None:
+            await game.send("Esteban", LEAVE)
+            await game.send("Ana", LEAVE)
+
+        leaving = asyncio.create_task(leave_until_the_game_ends())
+        await settle_tasks()
+        slow.release.set()
+        await asyncio.wait_for(leaving, timeout=5)
+
+        types = types_of(game.sockets["Luis"].sent)
+        assert types[types.index("vote_failed") :][:2] == [
+            "vote_failed",
+            "game_state",
+        ]
+        assert types[-1] == "game_over"
+
+    asyncio.run(scenario())

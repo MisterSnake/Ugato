@@ -268,3 +268,36 @@ describe('createGameSocket playing', () => {
     expect(handler).toHaveBeenCalledExactlyOnceWith(over)
   })
 })
+
+describe('createGameSocket voting', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+  })
+
+  it('sends propose_end and vote_end, queued until the socket opens', () => {
+    const { client, server } = connect()
+
+    client.proposeEnd()
+    client.voteEnd(true)
+    client.voteEnd(false)
+    expect(server.sent).toEqual([])
+    server.simulateOpen()
+
+    expect(server.sent).toEqual([
+      { type: 'propose_end' },
+      { type: 'vote_end', end: true },
+      { type: 'vote_end', end: false },
+    ])
+  })
+
+  it('passes vote_failed to its handlers', () => {
+    const { client, server } = connect()
+    const handler = vi.fn()
+    client.on('vote_failed', handler)
+    const failed = { proposer: 'Ana', endVotes: 1, continueVotes: 2 }
+
+    server.simulateMessage({ type: 'vote_failed', ...failed })
+
+    expect(handler).toHaveBeenCalledExactlyOnceWith(failed)
+  })
+})

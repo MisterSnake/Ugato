@@ -768,6 +768,88 @@ describe('App moves', () => {
   })
 })
 
+const voting = makeState({
+  vote: {
+    proposer: 'Ana',
+    voted: 1,
+    total: 2,
+    secondsLeft: 30,
+    yourVote: null,
+  },
+})
+const voteFailed = {
+  type: 'vote_failed',
+  proposer: 'Ana',
+  endVotes: 1,
+  continueVotes: 2,
+}
+const GOES_ON = 'The game goes on (1 to end, 2 to keep playing)'
+
+async function failVote() {
+  const app = await startAsHost()
+  receive(app.server, { type: 'game_state', state: voting })
+  receive(app.server, voteFailed)
+  receive(app.server, { type: 'game_state', state: opening })
+  return app
+}
+
+describe('App voting to end', () => {
+  it('sends the proposal and the vote of the user', async () => {
+    const { server, user } = await startAsPlayer()
+
+    await user.click(button('Propose ending (2 left)'))
+    expect(server.sent.at(-1)).toEqual({ type: 'propose_end' })
+    receive(server, {
+      type: 'game_state',
+      state: { ...voting, vote: { ...voting.vote!, proposer: 'Esteban' } },
+    })
+    await user.click(button('Keep playing'))
+
+    expect(server.sent.at(-1)).toEqual({ type: 'vote_end', end: false })
+  })
+
+  it('keeps the notice through the state sent with the failed vote', async () => {
+    await failVote()
+
+    expect(screen.getByText(GOES_ON)).toBeInTheDocument()
+  })
+
+  it('keeps the notice until something happens', async () => {
+    const { server } = await failVote()
+
+    receive(server, {
+      type: 'game_state',
+      state: { ...opening, leftPlayers: ['Luis'] },
+    })
+
+    expect(screen.getByText(GOES_ON)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['a new move', { ...opening, lastMove: { row: 2, col: 3 } }],
+    ['a new turn', { ...opening, currentPlayer: 'Esteban' }],
+    ['a new vote', voting],
+  ])('drops the notice after %s', async (_, state) => {
+    const { server } = await failVote()
+
+    receive(server, { type: 'game_state', state })
+
+    expect(screen.queryByText(GOES_ON)).not.toBeInTheDocument()
+  })
+
+  it('keeps the notice when the last move is only sent again', async () => {
+    const moved = { ...opening, lastMove: { row: 2, col: 3 } }
+    const { server } = await startAsHost()
+    receive(server, { type: 'game_state', state: { ...voting, ...moved } })
+    receive(server, voteFailed)
+
+    // Each message is parsed anew, so the move is an equal but new object.
+    receive(server, { type: 'game_state', state: moved })
+
+    expect(screen.getByText(GOES_ON)).toBeInTheDocument()
+  })
+})
+
 const gameOver = {
   type: 'game_over',
   winners: ['Ana'],
