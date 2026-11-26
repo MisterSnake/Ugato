@@ -11,6 +11,7 @@ import type {
   Player,
   Role,
   ServerError,
+  VoteFailed,
 } from './game/types'
 import { waitingGameFlag } from './game/waitingGameFlag'
 import { CreateGameForm } from './screens/CreateGameForm'
@@ -28,7 +29,14 @@ type View =
   // `me` is the user's own name in the game.
   | { screen: 'waiting'; game: GameSummary; role: Role; me: string }
   // The states name players only, so their colors come from the waiting room.
-  | { screen: 'playing'; state: GameState; players: Player[]; me: string }
+  | {
+      screen: 'playing'
+      state: GameState
+      players: Player[]
+      me: string
+      /** The last failed vote, until the next move. */
+      failedVote?: VoteFailed
+    }
   | { screen: 'finished'; gameOver: GameOver; me: string }
 
 const CONNECTING: LobbyState = { status: 'connecting', games: [] }
@@ -61,6 +69,18 @@ function viewAfterLobbyUpdate(view: View, games: GameSummary[]): View {
   return game.status === 'playing'
     ? { screen: 'home', notice: GAME_STARTED_NOTICE }
     : view
+}
+
+// The notice of a failed vote lasts until the next move or proposal. The state
+// sent along with the failure brings neither.
+function viewAfterGameState(view: View, state: GameState): View {
+  if (view.screen !== 'playing') return view
+  const moved =
+    state.currentPlayer !== view.state.currentPlayer ||
+    state.lastMove?.row !== view.state.lastMove?.row ||
+    state.lastMove?.col !== view.state.lastMove?.col
+  const failedVote = moved || state.vote ? undefined : view.failedVote
+  return { ...view, state, failedVote }
 }
 
 // An error answers a form. One that arrives after the user left it is dropped.
@@ -178,8 +198,11 @@ function App({ createSocket = createGameSocket }: AppProps) {
       )
     })
     socket.on('game_state', (state) =>
+      setView((current) => viewAfterGameState(current, state)),
+    )
+    socket.on('vote_failed', (failedVote) =>
       setView((current) =>
-        current.screen === 'playing' ? { ...current, state } : current,
+        current.screen === 'playing' ? { ...current, failedVote } : current,
       ),
     )
     socket.on('game_over', (gameOver) => {
@@ -280,8 +303,11 @@ function App({ createSocket = createGameSocket }: AppProps) {
           state={view.state}
           players={view.players}
           me={view.me}
+          failedVote={view.failedVote}
           onMark={(row, col) => socketRef.current?.markCell(row, col)}
           onChoose={(index) => socketRef.current?.chooseU(index)}
+          onPropose={() => socketRef.current?.proposeEnd()}
+          onVote={(end) => socketRef.current?.voteEnd(end)}
           onLeave={() => leaveGame('player')}
         />
       )

@@ -29,6 +29,12 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   cell_taken: 'That cell is already taken.',
   no_choice_pending: 'There is no U to choose.',
   invalid_choice: 'That U is not available.',
+  no_proposals_left: 'You have no proposals to end the game left.',
+  vote_pending: 'Wait for the vote to finish.',
+  no_vote_pending: 'There is no vote open.',
+  already_voted: 'You have already voted.',
+  proposer_cannot_vote: 'Your proposal already counts as your vote.',
+  invalid_vote: 'That vote is not valid.',
   already_in_game: 'You already have a game.',
   invalid_message: 'The server could not read the request.',
 }

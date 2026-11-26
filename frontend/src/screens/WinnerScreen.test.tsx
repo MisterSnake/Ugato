@@ -51,6 +51,22 @@ describe('WinnerScreen', () => {
     expect(screen.getByText('Everyone else left.')).toBeInTheDocument()
   })
 
+  it('says that the players voted to end the game', () => {
+    renderWinner({ reason: 'vote' })
+
+    expect(
+      screen.getByRole('heading', { name: 'Esteban wins!' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('The players voted to end the game.'),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('list', { name: 'Final scores' })).getAllByRole(
+        'listitem',
+      ),
+    ).toHaveLength(3)
+  })
+
   it('announces a draw', () => {
     renderWinner({ winners: ['Esteban', 'Ana'] })
 

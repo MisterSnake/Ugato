@@ -1,8 +1,8 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
-import { describe, expect, it, vi } from 'vitest'
-import type { Cell, GameState, Player, Position } from '../game/types'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Cell, GameState, Player, Position, Vote } from '../game/types'
 import { FakeResizeObserver } from '../test/FakeResizeObserver'
 import { emptyBoard, makeState } from '../test/gameState'
 import { GameScreen } from './GameScreen'
@@ -23,6 +23,8 @@ function renderGame(state: Partial<GameState> = {}, me = 'Esteban') {
     onLeave: vi.fn(),
     onMark: vi.fn(),
     onChoose: vi.fn(),
+    onPropose: vi.fn(),
+    onVote: vi.fn(),
   }
   const view = render(<GameScreen {...props} />)
   const update = (next: Partial<GameState>) =>
@@ -473,5 +475,128 @@ describe('GameScreen zoom, pan and rotation', () => {
     )
     await user.click(button('Next'))
     expect(board().style.transform).toBe('translate(0px) scale(1.5)')
+  })
+})
+
+const openVote: Vote = {
+  proposer: 'Ana',
+  voted: 1,
+  total: 3,
+  secondsLeft: 30,
+  yourVote: null,
+}
+const attempts = (mine: number) => ({
+  endProposalsLeft: { Esteban: mine, Ana: 2, Luis: 2 },
+})
+
+describe('GameScreen proposing to end', () => {
+  it("sends the proposal from the turn bar on the user's turn", async () => {
+    const { user, onPropose } = renderGame({ ...myTurn, ...attempts(2) })
+
+    await user.click(
+      within(turnBar()).getByRole('button', {
+        name: 'Propose ending (2 left)',
+      }),
+    )
+
+    expect(onPropose).toHaveBeenCalledOnce()
+  })
+
+  it.each<[string, Partial<GameState>, number]>([
+    ['out of turn', { currentPlayer: 'Ana' }, 2],
+    ['while choosing a U', { ...myTurn, phase: 'choose' }, 2],
+    ['during a vote', { ...myTurn, vote: openVote }, 1],
+    ['without attempts', myTurn, 0],
+  ])('is disabled %s', (_, state, left) => {
+    renderGame({ ...state, ...attempts(left) })
+
+    expect(button(`Propose ending (${left} left)`)).toBeDisabled()
+  })
+})
+
+const panel = () =>
+  screen.getByRole('region', { name: 'Vote to end the game' })
+
+describe('GameScreen voting panel', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('is only shown while a vote is open', () => {
+    renderGame()
+
+    expect(
+      screen.queryByRole('region', { name: 'Vote to end the game' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows who proposed, the progress and the time left', () => {
+    renderGame({ vote: openVote })
+
+    expect(panel()).toHaveTextContent('Ana wants to end the game')
+    expect(panel()).toHaveTextContent('1 of 3 voted')
+    expect(panel()).toHaveTextContent('30 s left')
+  })
+
+  it.each([
+    ['End game', true],
+    ['Keep playing', false],
+  ])('votes with "%s"', async (name, end) => {
+    const { user, onVote } = renderGame({ vote: openVote })
+
+    await user.click(within(panel()).getByRole('button', { name }))
+
+    expect(onVote).toHaveBeenCalledExactlyOnceWith(end)
+  })
+
+  it('replaces the buttons with a note once the user has voted', () => {
+    const { update } = renderGame({ vote: openVote })
+
+    update({ vote: { ...openVote, voted: 2, yourVote: 'continue' } })
+
+    expect(panel()).toHaveTextContent('You have voted.')
+    expect(queryButton('End game')).not.toBeInTheDocument()
+    expect(queryButton('Keep playing')).not.toBeInTheDocument()
+    expect(panel()).not.toHaveTextContent('continue')
+  })
+
+  it('lets the proposer only wait', () => {
+    renderGame(
+      { vote: { ...openVote, proposer: 'Esteban', yourVote: 'end' } },
+      'Esteban',
+    )
+
+    expect(panel()).toHaveTextContent('You proposed ending the game')
+    expect(panel()).toHaveTextContent('30 s left')
+    expect(panel()).not.toHaveTextContent('You have voted.')
+    expect(queryButton('End game')).not.toBeInTheDocument()
+    expect(queryButton('Keep playing')).not.toBeInTheDocument()
+  })
+
+  it('counts down, and starts again from each new state', () => {
+    vi.useFakeTimers()
+    const { update } = renderGame({ vote: openVote })
+
+    act(() => vi.advanceTimersByTime(3_000))
+    expect(panel()).toHaveTextContent('27 s left')
+
+    update({ vote: { ...openVote, voted: 2, secondsLeft: 20 } })
+    expect(panel()).toHaveTextContent('20 s left')
+    act(() => vi.advanceTimersByTime(2_000))
+    expect(panel()).toHaveTextContent('18 s left')
+
+    act(() => vi.advanceTimersByTime(60_000))
+    expect(panel()).toHaveTextContent('0 s left')
+  })
+
+  it("keeps the board inert on the user's turn", () => {
+    const { onMark } = renderGame({ ...myTurn, vote: openVote })
+
+    press(2, 3)
+    press(2, 3, 'touch')
+
+    expect(onMark).not.toHaveBeenCalled()
+    expect(cellAt(2, 3)).not.toHaveClass('selected')
+    expect(queryButton('Mark')).not.toBeInTheDocument()
   })
 })

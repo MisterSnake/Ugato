@@ -17,3 +17,16 @@ describe('ERROR_MESSAGES during play', () => {
     )
   })
 })
+
+describe('ERROR_MESSAGES during a vote', () => {
+  it.each([
+    ['no_proposals_left', 'You have no proposals to end the game left.'],
+    ['vote_pending', 'Wait for the vote to finish.'],
+    ['no_vote_pending', 'There is no vote open.'],
+    ['already_voted', 'You have already voted.'],
+    ['proposer_cannot_vote', 'Your proposal already counts as your vote.'],
+    ['invalid_vote', 'That vote is not valid.'],
+  ] as const)('explains %s', (code, message) => {
+    expect(ERROR_MESSAGES[code]).toBe(message)
+  })
+})

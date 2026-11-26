@@ -1,13 +1,19 @@
 import type { GameOver } from './types'
 
+// A full board needs no explanation: everyone can see it.
+const DETAILS: Record<GameOver['reason'], string | undefined> = {
+  board_full: undefined,
+  last_player: 'Everyone else left.',
+  vote: 'The players voted to end the game.',
+}
+
 export function winnerTitle(
   { winners, reason }: Pick<GameOver, 'winners' | 'reason'>,
   me: string,
 ): { title: string; detail?: string } {
   const title = titleFor(winners, me)
-  return reason === 'last_player'
-    ? { title, detail: 'Everyone else left.' }
-    : { title }
+  const detail = DETAILS[reason]
+  return detail ? { title, detail } : { title }
 }
 
 function titleFor(winners: string[], me: string): string {

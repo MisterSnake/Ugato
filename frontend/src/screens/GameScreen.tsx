@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
-import type { Color, GameState, Player, Position } from '../game/types'
+import type {
+  Color,
+  GameState,
+  Player,
+  Position,
+  VoteFailed,
+} from '../game/types'
 import { turnStatus } from '../game/turnStatus'
+import { canProposeEnd } from '../game/voteStatus'
 import { colorLabel } from './colorLabel'
 import { GameBoard } from './GameBoard'
+import { VotePanel } from './VotePanel'
 
 interface GameScreenProps {
   state: GameState
@@ -10,8 +18,12 @@ interface GameScreenProps {
   players: Player[]
   /** The user's own name. */
   me: string
+  /** A vote that has just failed. */
+  failedVote?: VoteFailed
   onMark: (row: number, col: number) => void
   onChoose: (index: number) => void
+  onPropose: () => void
+  onVote: (end: boolean) => void
   onLeave: () => void
 }
 
@@ -19,8 +31,11 @@ export function GameScreen({
   state,
   players,
   me,
+  failedVote,
   onMark,
   onChoose,
+  onPropose,
+  onVote,
   onLeave,
 }: GameScreenProps) {
   const status = turnStatus(state, me)
@@ -29,7 +44,10 @@ export function GameScreen({
   const currentColor = colorOf(state.currentPlayer)
 
   const canMark = ({ row, col }: Position) =>
-    status.isMyTurn && state.phase === 'mark' && !state.board[row][col]
+    status.isMyTurn &&
+    state.phase === 'mark' &&
+    !state.vote &&
+    !state.board[row][col]
   const [selection, setSelection] = useState<Position | null>(null)
   // A selection that can no longer be marked is not shown.
   const selected = selection && canMark(selection) ? selection : null
@@ -106,7 +124,21 @@ export function GameScreen({
             </button>
           </div>
         )}
+        <button
+          type="button"
+          disabled={!canProposeEnd(state, me)}
+          onClick={onPropose}
+        >
+          {`Propose ending (${state.endProposalsLeft[me]} left)`}
+        </button>
       </header>
+
+      {state.vote && <VotePanel vote={state.vote} me={me} onVote={onVote} />}
+      {failedVote && (
+        <p role="status" className="vote-notice">
+          {`The game goes on (${failedVote.endVotes} to end, ${failedVote.continueVotes} to keep playing)`}
+        </p>
+      )}
 
       <GameBoard
         state={state}

@@ -54,6 +54,24 @@ export type Cell = { owner: string; disabled: boolean } | null
 /** Rows of cells, as `board[row][col]`. */
 export type Board = Cell[][]
 
+/** An open vote to end the game. */
+export interface Vote {
+  proposer: string
+  /** How many have voted, the proposer included. */
+  voted: number
+  /** How many are still in the game. */
+  total: number
+  secondsLeft: number
+  /** The user's own vote. Nobody learns what the others voted. */
+  yourVote: 'end' | 'continue' | null
+}
+
+export interface VoteFailed {
+  proposer: string
+  endVotes: number
+  continueVotes: number
+}
+
 /** A started game. Players are identified by name. */
 export interface GameState {
   board: Board
@@ -63,6 +81,9 @@ export interface GameState {
   scores: Record<string, number>
   leftPlayers: string[]
   lastMove: Position | null
+  /** How many more times each player can propose ending the game. */
+  endProposalsLeft: Record<string, number>
+  vote: Vote | null
   /** Only sent to the player who has to choose a U. */
   candidates?: Position[][]
 }
@@ -70,7 +91,7 @@ export interface GameState {
 export interface GameOver {
   winners: string[]
   scores: Record<string, number>
-  reason: 'board_full' | 'last_player'
+  reason: 'board_full' | 'last_player' | 'vote'
   board: Board
 }
 
@@ -105,6 +126,12 @@ export type ErrorCode =
   | 'cell_taken'
   | 'no_choice_pending'
   | 'invalid_choice'
+  | 'no_proposals_left'
+  | 'vote_pending'
+  | 'no_vote_pending'
+  | 'already_voted'
+  | 'proposer_cannot_vote'
+  | 'invalid_vote'
   | 'already_in_game'
   | 'invalid_message'
 
@@ -123,5 +150,6 @@ export type ServerMessage =
   | { type: 'games_list'; games: GameSummary[] }
   | { type: 'game_started'; state: GameState }
   | { type: 'game_state'; state: GameState }
+  | ({ type: 'vote_failed' } & VoteFailed)
   | ({ type: 'game_over' } & GameOver)
   | ({ type: 'error' } & ServerError)

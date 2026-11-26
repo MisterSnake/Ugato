@@ -1,4 +1,5 @@
 import copy
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from app.games.board import Cell
 from app.games.match import (
     EndReason,
+    FailedVote,
     Match,
     MatchResult,
     Phase,
@@ -341,6 +343,8 @@ def test_the_state_describes_the_whole_match() -> None:
         "scores": {"R": 1, "B": 0, "G": 0},
         "leftPlayers": ["G"],
         "lastMove": {"row": 0, "col": 1},
+        "endProposalsLeft": {"R": 2, "B": 2, "G": 2},
+        "vote": None,
     }
 
 
@@ -379,3 +383,416 @@ def test_the_game_over_payload_describes_the_result() -> None:
         "reason": "board_full",
         "board": match_state(match, "R")["board"],
     }
+
+
+@dataclass
+class FakeClock:
+    """A clock the test moves by hand."""
+
+    now: float = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_a_new_match_gives_every_player_two_end_proposals() -> None:
+    match = make_match("....", "R", "B", "G")
+
+    assert match.proposals_left == {"R": 2, "B": 2, "G": 2}
+
+
+def test_a_match_accepts_a_clock_and_a_vote_duration() -> None:
+    clock = FakeClock()
+
+    match = Match(PLAYERS, 8, 8, FixedOrder(*PLAYERS), clock=clock, vote_seconds=5)
+
+    assert (match.clock, match.vote_seconds) == (clock, 5)
+
+
+def voting_match(*order: str) -> tuple[Match, FakeClock]:
+    """A match on an empty board, with a fake clock and a 30-second vote."""
+    order = order or ("R", "B", "G")
+    clock = FakeClock()
+    match = Match(order, 8, 8, FixedOrder(*order), clock=clock, vote_seconds=30)
+    return match, clock
+
+
+def test_a_proposal_opens_a_vote_with_the_proposer_voting_to_end() -> None:
+    match, clock = voting_match()
+
+    match.propose_end("R")
+
+    assert match.vote.proposer == "R"
+    assert match.vote.votes == {"R": True}
+    assert match.vote.deadline == clock.now + 30
+    assert (match.current_player, match.phase) == ("R", "mark")
+    assert match.proposals_left == {"R": 2, "B": 2, "G": 2}
+
+
+def test_each_vote_gets_a_new_id() -> None:
+    match, _ = voting_match()
+    match.propose_end("R")
+    first = match.vote.id
+    match.vote = None
+
+    match.propose_end("R")
+
+    assert match.vote.id != first
+
+
+@pytest.mark.parametrize(
+    ("player", "voting", "choosing", "attempts", "code"),
+    [
+        pytest.param("B", False, False, 2, "not_your_turn", id="out-of-turn"),
+        pytest.param("R", True, False, 2, "vote_pending", id="vote-open"),
+        pytest.param("R", False, True, 2, "choice_pending", id="choosing"),
+        pytest.param("R", False, False, 0, "no_proposals_left", id="no-attempts"),
+        pytest.param("B", True, True, 0, "not_your_turn", id="turn-first"),
+        pytest.param("R", True, True, 0, "vote_pending", id="vote-second"),
+        pytest.param("R", False, True, 0, "choice_pending", id="choice-third"),
+    ],
+)
+def test_a_proposal_reports_only_the_first_broken_rule(
+    player: str, voting: bool, choosing: bool, attempts: int, code: str
+) -> None:
+    match, _ = voting_match()
+    if voting:
+        match.propose_end("R")
+    if choosing:
+        match.phase = Phase.CHOOSE
+    match.proposals_left = dict.fromkeys(match.turn_order, attempts)
+
+    assert_rejected(match, code, lambda: match.propose_end(player))
+
+
+@pytest.mark.parametrize("choosing", [False, True])
+@pytest.mark.parametrize(
+    "move",
+    [
+        pytest.param(lambda match, player: match.mark(player, 9, 9), id="mark"),
+        pytest.param(lambda match, player: match.choose(player, 9), id="choose"),
+    ],
+)
+def test_a_move_during_a_vote_is_rejected(choosing: bool, move: Any) -> None:
+    match, _ = voting_match()
+    match.propose_end("R")
+    if choosing:
+        # No vote opens during a choice: this only pins the order of the checks.
+        match.phase = Phase.CHOOSE
+
+    assert_rejected(match, "vote_pending", lambda: move(match, "R"))
+    assert_rejected(match, "not_your_turn", lambda: move(match, "B"))
+
+
+FOUR = ("R", "B", "G", "Y")
+
+
+def proposed(*order: str) -> Match:
+    """A match where the first player has just proposed ending it."""
+    match, _ = voting_match(*order)
+    match.propose_end(match.current_player)
+    return match
+
+
+def test_a_vote_that_stays_open_is_recorded_and_keeps_the_turn() -> None:
+    match = proposed(*FOUR)
+
+    assert match.vote_end("B", False) is None
+
+    assert match.vote.votes == {"R": True, "B": False}
+    assert match.result is None
+    assert (match.current_player, match.phase) == ("R", "mark")
+
+
+def test_a_majority_ends_the_match_at_once() -> None:
+    match = proposed("R", "B", "G")
+
+    match.vote_end("B", True)
+
+    assert match.result is not None
+
+
+@pytest.mark.parametrize(
+    ("order", "votes"),
+    [
+        pytest.param(
+            FOUR, [("B", True), ("G", False), ("Y", False)], id="tie"
+        ),
+        pytest.param(("R", "B"), [("B", False)], id="two-players-must-agree"),
+        pytest.param(FOUR, [("B", False), ("G", False)], id="decided-early"),
+    ],
+)
+def test_a_vote_that_cannot_reach_a_majority_closes(
+    order: tuple[str, ...], votes: list[tuple[str, bool]]
+) -> None:
+    match = proposed(*order)
+
+    for player, end in votes[:-1]:
+        match.vote_end(player, end)
+        assert match.vote is not None
+    match.vote_end(*votes[-1])
+
+    assert (match.vote, match.result) == (None, None)
+
+
+def test_a_vote_without_an_open_one_is_rejected() -> None:
+    match, _ = voting_match()
+
+    assert_rejected(match, "no_vote_pending", lambda: match.vote_end("R", "yes"))
+
+
+@pytest.mark.parametrize(
+    ("player", "end", "code"),
+    [
+        pytest.param("R", "yes", "proposer_cannot_vote", id="proposer"),
+        pytest.param("B", "yes", "already_voted", id="twice"),
+        pytest.param("G", None, "invalid_vote", id="missing"),
+        pytest.param("G", "yes", "invalid_vote", id="text"),
+        pytest.param("G", 1, "invalid_vote", id="integer"),
+        pytest.param("G", 0, "invalid_vote", id="zero"),
+    ],
+)
+def test_a_vote_reports_only_the_first_broken_rule(
+    player: str, end: object, code: str
+) -> None:
+    match = proposed(*FOUR)
+    match.vote_end("B", False)
+
+    assert_rejected(match, code, lambda: match.vote_end(player, end))
+
+
+def test_a_failed_vote_is_reported_and_keeps_the_turn() -> None:
+    match = proposed("R", "B", "G")
+    match.vote_end("B", False)
+
+    failed = match.vote_end("G", False)
+
+    assert failed == FailedVote("R", end_votes=1, continue_votes=2)
+    assert match.vote is None
+    assert (match.current_player, match.phase) == ("R", "mark")
+
+
+@pytest.mark.parametrize(
+    ("before", "proposer", "after"),
+    [
+        pytest.param((2, 2, 2), "R", (1, 2, 2), id="proposer-spends-one"),
+        pytest.param((1, 2, 2), "B", (2, 1, 2), id="another-gets-one-back"),
+        pytest.param((0, 2, 2), "B", (1, 1, 2), id="recovers-from-zero"),
+    ],
+)
+def test_a_failed_vote_moves_the_end_proposals(
+    before: tuple[int, ...], proposer: str, after: tuple[int, ...]
+) -> None:
+    order = ("R", "B", "G")
+    match, _ = voting_match(proposer, *(name for name in order if name != proposer))
+    match.proposals_left = dict(zip(order, before))
+    match.propose_end(proposer)
+
+    for voter in order:
+        if voter != proposer and match.vote is not None:
+            match.vote_end(voter, False)
+
+    assert match.proposals_left == dict(zip(order, after))
+
+
+def test_a_player_who_left_gets_no_end_proposal_back() -> None:
+    match, _ = voting_match("R", "B", "G")
+    match.proposals_left["G"] = 1
+    match.leave("G")
+    match.propose_end("R")
+
+    match.vote_end("B", False)
+
+    assert match.proposals_left == {"R": 1, "B": 2, "G": 1}
+
+
+def test_the_proposer_can_propose_again_on_the_same_turn() -> None:
+    match = proposed("R", "B")
+    match.vote_end("B", False)
+
+    match.propose_end("R")
+    match.vote_end("B", False)
+
+    assert match.proposals_left == {"R": 0, "B": 2}
+    assert_rejected(match, "no_proposals_left", lambda: match.propose_end("R"))
+
+
+def test_a_vote_that_fails_early_counts_only_the_votes_cast() -> None:
+    match = proposed(*FOUR)
+    match.vote_end("B", False)
+
+    assert match.vote_end("G", False) == FailedVote("R", 1, 2)
+
+
+@pytest.mark.parametrize(
+    ("scores", "left", "winners"),
+    [
+        pytest.param({"R": 1, "B": 0, "G": 3}, set(), ["G"], id="highest-score"),
+        pytest.param({"R": 2, "B": 2, "G": 1}, set(), ["R", "B"], id="draw"),
+        pytest.param({"R": 1, "B": 2, "G": 5}, {"G"}, ["B"], id="left-cannot-win"),
+    ],
+)
+def test_a_passed_vote_gives_the_win_to_the_highest_score(
+    scores: dict[str, int], left: set[str], winners: list[str]
+) -> None:
+    match, _ = voting_match("R", "B", "G")
+    match.scores = dict(scores)
+    for player in left:
+        match.leave(player)
+    match.propose_end("R")
+
+    assert match.vote_end("B", True) is None
+
+    assert match.result == MatchResult(winners, EndReason.VOTE)
+    assert match.vote is None
+    assert match.proposals_left == {"R": 2, "B": 2, "G": 2}
+
+
+def test_an_expired_vote_counts_the_missing_votes_as_continue() -> None:
+    match = proposed("R", "B", "G")
+
+    failed = match.expire_vote(match.vote.id)
+
+    assert failed == FailedVote("R", end_votes=1, continue_votes=2)
+    assert match.vote is None
+    assert match.proposals_left == {"R": 1, "B": 2, "G": 2}
+    assert (match.current_player, match.phase) == ("R", "mark")
+
+
+def test_expiring_an_old_vote_changes_nothing() -> None:
+    match = proposed("R", "B")
+    old = match.vote.id
+    match.vote_end("B", False)
+    match.propose_end("R")
+    before = copy.deepcopy(vars(match))
+
+    assert match.expire_vote(old) is None
+
+    assert vars(match) == before
+
+
+def test_expiring_with_no_vote_open_changes_nothing() -> None:
+    match = proposed("R", "B")
+    old = match.vote.id
+    match.vote_end("B", False)
+    before = copy.deepcopy(vars(match))
+
+    assert match.expire_vote(old) is None
+
+    assert vars(match) == before
+
+
+def test_a_leaving_voter_can_make_the_vote_pass() -> None:
+    match = proposed(*FOUR)
+    match.vote_end("B", True)
+    match.vote_end("G", False)
+
+    assert match.leave("G") is None
+
+    assert match.vote is None
+    assert match.result == MatchResult(["R", "B", "Y"], EndReason.VOTE)
+
+
+def test_a_leaving_voter_can_make_the_vote_fail() -> None:
+    match = proposed("R", "B", "G")
+    match.vote_end("B", False)
+
+    # With two players left, both must agree, and "B" did not.
+    failed = match.leave("G")
+
+    assert failed == FailedVote("R", end_votes=1, continue_votes=1)
+    assert match.vote is None
+    assert match.proposals_left == {"R": 1, "B": 2, "G": 2}
+    assert match.current_player == "R"
+
+
+def test_a_leaving_voter_leaves_the_vote_open_with_a_smaller_total() -> None:
+    match = proposed(*FOUR)
+    match.vote_end("B", False)
+
+    assert match.leave("B") is None
+
+    assert match.vote.votes == {"R": True}
+    assert match.remaining_players() == ["R", "G", "Y"]
+    assert match.result is None
+
+
+def test_a_leaving_proposer_cancels_the_vote() -> None:
+    match = proposed("R", "B", "G")
+
+    assert match.leave("R") is None
+
+    assert (match.vote, match.result) == (None, None)
+    assert match.proposals_left == {"R": 2, "B": 2, "G": 2}
+    assert match.current_player == "B"
+
+
+@pytest.mark.parametrize("leaver", ["R", "B"])
+def test_the_last_player_during_a_vote_wins_as_last_standing(leaver: str) -> None:
+    match = proposed("R", "B")
+    (survivor,) = {"R", "B"} - {leaver}
+
+    assert match.leave(leaver) is None
+
+    assert match.result == MatchResult([survivor], EndReason.LAST_PLAYER)
+    assert match.vote is None
+
+
+def test_the_state_has_the_end_proposals_and_no_vote() -> None:
+    match, _ = voting_match("R", "B")
+    match.proposals_left["B"] = 1
+
+    state = match_state(match, "R")
+
+    assert state["endProposalsLeft"] == {"R": 2, "B": 1}
+    assert state["vote"] is None
+
+
+@pytest.mark.parametrize(
+    ("viewer", "own_vote"), [("R", "end"), ("B", "continue"), ("G", None)]
+)
+def test_the_state_describes_the_open_vote_without_the_others_votes(
+    viewer: str, own_vote: str | None
+) -> None:
+    match = proposed(*FOUR)
+    match.vote_end("B", False)
+
+    # An exact match, so nothing else can reveal what somebody voted.
+    assert match_state(match, viewer)["vote"] == {
+        "proposer": "R",
+        "voted": 2,
+        "total": 4,
+        "secondsLeft": 30,
+        "yourVote": own_vote,
+    }
+
+
+def test_the_vote_total_counts_only_the_players_still_in() -> None:
+    match = proposed(*FOUR)
+    match.leave("Y")
+
+    vote = match_state(match, "R")["vote"]
+
+    assert (vote["voted"], vote["total"]) == (1, 3)
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "left"), [(0, 30), (0.1, 30), (1, 29), (29.5, 1), (30, 0), (45, 0)]
+)
+def test_the_seconds_left_are_rounded_up_and_never_negative(
+    elapsed: float, left: int
+) -> None:
+    match, clock = voting_match()
+    match.propose_end("R")
+
+    clock.now += elapsed
+
+    assert match_state(match, "R")["vote"]["secondsLeft"] == left
+
+
+def test_the_game_over_payload_reports_a_vote() -> None:
+    match = proposed("R", "B")
+
+    match.vote_end("B", True)
+
+    assert game_over_payload(match)["reason"] == "vote"

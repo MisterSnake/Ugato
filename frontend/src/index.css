@@ -238,6 +238,31 @@ dd {
   }
 }
 
+.vote-panel {
+  align-self: stretch;
+  text-align: center;
+  overflow-wrap: anywhere;
+
+  p {
+    margin: 0;
+  }
+
+  .vote-title {
+    color: var(--text-h);
+    font-weight: 700;
+  }
+
+  .actions {
+    margin-top: 0.5rem;
+  }
+}
+
+.vote-notice {
+  margin: 0;
+  color: var(--text-h);
+  text-align: center;
+}
+
 .board-area {
   --empty-cell: #d9d6cd;
 

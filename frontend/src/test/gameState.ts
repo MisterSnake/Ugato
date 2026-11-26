@@ -16,6 +16,8 @@ export function makeState(overrides: Partial<GameState> = {}): GameState {
     scores: { Ana: 0, Esteban: 0 },
     leftPlayers: [],
     lastMove: null,
+    endProposalsLeft: { Ana: 2, Esteban: 2 },
+    vote: null,
     ...overrides,
   }
 }
