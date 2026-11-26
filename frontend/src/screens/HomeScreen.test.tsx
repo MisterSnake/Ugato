@@ -29,6 +29,7 @@ const twoGames: LobbyState = {
       maxPlayers: 2,
       boardWidth: 12,
       boardHeight: 10,
+      timer: 'none',
       status: 'waiting',
       players: [{ name: 'Esteban', color: 'red' }],
     },
@@ -37,6 +38,7 @@ const twoGames: LobbyState = {
       maxPlayers: 4,
       boardWidth: 20,
       boardHeight: 15,
+      timer: 'none',
       status: 'waiting',
       players: [{ name: 'Ana', color: 'blue' }],
     },
@@ -139,12 +141,30 @@ describe('HomeScreen', () => {
     maxPlayers: 2,
     boardWidth: 8,
     boardHeight: 8,
+    timer: 'none',
     status: 'playing',
     players: [
       { name: 'Esteban', color: 'red' },
       { name: 'Ana', color: 'blue' },
     ],
   }
+
+  it('shows the timer of a waiting game next to its board size', () => {
+    const [partida] = twoGames.games
+    renderHome({
+      lobby: { status: 'ready', games: [{ ...partida, timer: 'fast' }] },
+    })
+    const row = within(screen.getByRole('listitem'))
+
+    expect(row.getByText('12 x 10')).toBeInTheDocument()
+    expect(row.getByText('Fast 10-5')).toBeInTheDocument()
+  })
+
+  it('says that a game in progress has no timer', () => {
+    renderHome({ lobby: { status: 'ready', games: [inProgress] } })
+
+    expect(screen.getByText('No timer')).toBeInTheDocument()
+  })
 
   it('marks a game in progress and offers no way to join it', () => {
     renderHome({ lobby: { status: 'ready', games: [inProgress] } })

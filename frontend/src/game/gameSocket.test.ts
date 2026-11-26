@@ -10,6 +10,7 @@ const request: CreateGameRequest = {
   maxPlayers: 2,
   boardWidth: 12,
   boardHeight: 10,
+  timer: 'none',
 }
 
 const game: GameSummary = {
@@ -17,6 +18,7 @@ const game: GameSummary = {
   maxPlayers: 2,
   boardWidth: 12,
   boardHeight: 10,
+  timer: 'none',
   status: 'waiting',
   players: [{ name: 'Esteban', color: 'red' }],
 }
@@ -288,6 +290,16 @@ describe('createGameSocket voting', () => {
       { type: 'vote_end', end: true },
       { type: 'vote_end', end: false },
     ])
+  })
+
+  it('passes turn_timed_out to its handlers', () => {
+    const { client, server } = connect()
+    const handler = vi.fn()
+    client.on('turn_timed_out', handler)
+
+    server.simulateMessage({ type: 'turn_timed_out', player: 'Ana' })
+
+    expect(handler).toHaveBeenCalledExactlyOnceWith({ player: 'Ana' })
   })
 
   it('passes vote_failed to its handlers', () => {

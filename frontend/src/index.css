@@ -257,7 +257,7 @@ dd {
   }
 }
 
-.vote-notice {
+.game-notice {
   margin: 0;
   color: var(--text-h);
   text-align: center;
@@ -353,6 +353,11 @@ dd {
 
 .zoom button {
   min-width: 3rem;
+}
+
+.clock {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .scores {

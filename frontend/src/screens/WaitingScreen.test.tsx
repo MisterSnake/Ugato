@@ -10,6 +10,7 @@ const game: GameSummary = {
   maxPlayers: 3,
   boardWidth: 12,
   boardHeight: 10,
+  timer: 'none',
   status: 'waiting',
   players: [
     { name: 'Esteban', color: 'red' },
@@ -53,6 +54,16 @@ describe('WaitingScreen', () => {
     ]) {
       expect(screen.getByText(text)).toBeInTheDocument()
     }
+  })
+
+  it.each([
+    ['host', 'normal', 'Normal 30-10'],
+    ['player', 'slow', 'Slow 60-15'],
+    ['player', 'none', 'No timer'],
+  ] as const)('shows a %s the %s timer', (role, timer, label) => {
+    renderWaiting({ role, game: { ...game, timer } })
+
+    expect(screen.getByText(label)).toBeInTheDocument()
   })
 
   it('lists the players with their colors in join order', () => {

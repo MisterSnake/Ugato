@@ -33,11 +33,11 @@ Run commands from inside the relevant subdirectory.
 ## Architecture: how the pieces connect
 
 - `backend/app/main.py` holds the `FastAPI` instance, `GET /api/health`, and mounts the game router. New routes should go under the `/api` prefix so the Vite proxy forwards them.
-- Games use one WebSocket, `WS /api/ws` (`backend/app/games/ws.py`). The message types and error codes are documented in `backend/README.md`. A game lives only as long as its creator's connection.
+- Games use one WebSocket, `WS /api/ws` (`backend/app/games/ws.py`). The message types and error codes are documented in `backend/README.md`. Before the start, a game lives only as long as its creator's connection. After the start, the host is an ordinary player, so their leaving or disconnecting does not close the game.
 - `backend/app/games/` also has the models, the pure validation rules and the in-memory `GameRegistry`. Tests override the `get_registry` dependency to get a fresh registry.
 - Because the registry is process memory, the server must run as a single worker. With more, name uniqueness breaks.
 - `frontend/vite.config.ts` proxies `/api` (with `ws: true`) to `http://localhost:8000`, so the frontend uses same-origin URLs. CORS in `app/main.py` still allows only `http://localhost:5173` for direct HTTP calls to port 8000; it does not apply to WebSockets.
-- `frontend/src/App.tsx` is the screen state machine (home → form → waiting). Screens are in `src/screens/`. Components never use `WebSocket` directly: they go through `src/game/gameSocket.ts`, and tests inject `src/test/FakeWebSocket.ts`.
+- `frontend/src/App.tsx` is the screen state machine (home → form or join → waiting → playing → finished). Screens are in `src/screens/`. Components never use `WebSocket` directly: they go through `src/game/gameSocket.ts`, and tests inject `src/test/FakeWebSocket.ts`.
 - `frontend/src/game/validation.ts` mirrors `backend/app/games/validation.py`. The server is the source of truth, so change both together.
 - Tests in `backend/tests/` use `fastapi.testclient.TestClient` against `app.main.app` directly; no server needs to be running.
 

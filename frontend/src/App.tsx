@@ -36,6 +36,8 @@ type View =
       me: string
       /** The last failed vote, until the next move. */
       failedVote?: VoteFailed
+      /** Who last lost a turn to the clock, until the next move. */
+      timedOut?: string
     }
   | { screen: 'finished'; gameOver: GameOver; me: string }
 
@@ -72,15 +74,17 @@ function viewAfterLobbyUpdate(view: View, games: GameSummary[]): View {
 }
 
 // The notice of a failed vote lasts until the next move or proposal. The state
-// sent along with the failure brings neither.
+// sent along with the failure brings neither. The notice of a timeout lasts until
+// the next mark: the state sent along with it already passes the turn.
 function viewAfterGameState(view: View, state: GameState): View {
   if (view.screen !== 'playing') return view
-  const moved =
-    state.currentPlayer !== view.state.currentPlayer ||
+  const marked =
     state.lastMove?.row !== view.state.lastMove?.row ||
     state.lastMove?.col !== view.state.lastMove?.col
+  const moved = marked || state.currentPlayer !== view.state.currentPlayer
   const failedVote = moved || state.vote ? undefined : view.failedVote
-  return { ...view, state, failedVote }
+  const timedOut = marked ? undefined : view.timedOut
+  return { ...view, state, failedVote, timedOut }
 }
 
 // An error answers a form. One that arrives after the user left it is dropped.
@@ -205,6 +209,13 @@ function App({ createSocket = createGameSocket }: AppProps) {
         current.screen === 'playing' ? { ...current, failedVote } : current,
       ),
     )
+    socket.on('turn_timed_out', ({ player }) =>
+      setView((current) =>
+        current.screen === 'playing'
+          ? { ...current, timedOut: player }
+          : current,
+      ),
+    )
     socket.on('game_over', (gameOver) => {
       waitingGameFlag.clear()
       setView((current) =>
@@ -304,6 +315,7 @@ function App({ createSocket = createGameSocket }: AppProps) {
           players={view.players}
           me={view.me}
           failedVote={view.failedVote}
+          timedOut={view.timedOut}
           onMark={(row, col) => socketRef.current?.markCell(row, col)}
           onChoose={(index) => socketRef.current?.chooseU(index)}
           onPropose={() => socketRef.current?.proposeEnd()}

@@ -6,6 +6,7 @@ import type {
   JoinGameRequest,
   ServerError,
   ServerMessage,
+  TurnTimedOut,
   VoteFailed,
 } from './types'
 
@@ -31,6 +32,7 @@ export interface GameSocketEvents {
   game_state: GameState
   game_over: GameOver
   vote_failed: VoteFailed
+  turn_timed_out: TurnTimedOut
   games_list: GameSummary[]
   error: ServerError
   close: { intentional: boolean }
@@ -73,6 +75,7 @@ export function createGameSocket(
     game_state: [],
     game_over: [],
     vote_failed: [],
+    turn_timed_out: [],
     games_list: [],
     error: [],
     close: [],
@@ -123,6 +126,9 @@ export function createGameSocket(
     } else if (message.type === 'vote_failed') {
       const { type: _type, ...failed } = message
       emit('vote_failed', failed)
+    } else if (message.type === 'turn_timed_out') {
+      const { type: _type, ...timedOut } = message
+      emit('turn_timed_out', timedOut)
     } else if (message.type === 'game_closed') {
       emit('game_closed', undefined)
     } else if (message.type === 'games_list') {

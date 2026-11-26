@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -8,11 +9,12 @@ from starlette.testclient import WebSocketTestSession
 
 from app.games.board import Cell
 from app.games.lobby import LobbyHub, get_lobby_hub
-from app.games.match import get_random, get_vote_seconds
-from app.games.models import Color, Game, Player
+from app.games.match import get_random, get_timer_modes, get_vote_seconds
+from app.games.models import Color, Game, Player, TimerMode
 from app.games.registry import GameRegistry, get_registry
 from app.games.rooms import GameRooms, get_game_rooms
-from app.games.ws import ClientSession
+from app.games.validation import TIMER_MODES, TimerSettings
+from app.games.ws import ClientSession, Timing, get_grace_seconds
 from app.main import app
 from tests.games.randomness import FixedOrder
 
@@ -69,6 +71,7 @@ def test_create_game_replies_with_summary_and_stores_game(
                 "maxPlayers": 2,
                 "boardWidth": 12,
                 "boardHeight": 10,
+                "timer": "none",
                 "status": "waiting",
                 "players": [{"name": "Esteban", "color": "red"}],
             },
@@ -484,6 +487,7 @@ def partida(*players: tuple[str, str], max_players: int = 3) -> dict[str, Any]:
         "maxPlayers": max_players,
         "boardWidth": 12,
         "boardHeight": 10,
+        "timer": "none",
         "status": "waiting",
         "players": [{"name": name, "color": color} for name, color in players],
     }
@@ -865,6 +869,9 @@ def empty_state(*order: str) -> dict[str, Any]:
         "lastMove": None,
         "endProposalsLeft": dict.fromkeys(order, 2),
         "vote": None,
+        "timer": "none",
+        "clocks": None,
+        "chooseMsLeft": None,
     }
 
 
@@ -928,6 +935,41 @@ def test_a_game_in_progress_cannot_be_joined(
         ]
         assert pending_messages(watcher) == []
         assert [len(game.players) for game in registry.list()] == [2]
+
+
+def test_the_timer_mode_is_sent_in_every_summary(client: TestClient) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as watcher,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        subscribe(watcher)
+
+        (created,) = request(host, create_message(timer="normal"))
+        (listed,) = pending_messages(watcher)
+        joined = request(ana, join_message())[0]
+        updated = pending_messages(host)[0]
+
+        assert (created["type"], created["game"]["timer"]) == ("game_created", "normal")
+        assert [game["timer"] for game in listed["games"]] == ["normal"]
+        assert (joined["type"], joined["game"]["timer"]) == ("game_joined", "normal")
+        assert (updated["type"], updated["game"]["timer"]) == ("game_updated", "normal")
+
+
+def test_an_unknown_timer_is_rejected_and_the_lobby_hears_nothing(
+    client: TestClient, registry: GameRegistry
+) -> None:
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as watcher,
+    ):
+        subscribe(watcher)
+
+        assert request(host, create_message(timer="blitz")) == [
+            {"type": "error", "field": "timer", "code": "invalid_timer"}
+        ]
+        assert pending_messages(watcher) == []
+        assert registry.list() == []
 
 
 def mark(row: object, col: object) -> dict[str, Any]:
@@ -1739,11 +1781,22 @@ def test_the_proposer_keeps_the_turn_after_the_vote_expires(
 class Trio:
     """A three-player game driven without a server. "Ana" moves first."""
 
+    # The timer mode the game is created with.
+    timer = "none"
+
     def __init__(
-        self, ana_socket: RecordingSocket | None = None, vote_seconds: float = 30
+        self,
+        ana_socket: RecordingSocket | None = None,
+        vote_seconds: float = 30,
+        timer_modes: dict[TimerMode, TimerSettings] | None = None,
     ) -> None:
         self.registry = GameRegistry()
         hub, rooms = LobbyHub(), GameRooms()
+        timing = Timing(
+            vote_seconds=vote_seconds,
+            timer_modes=timer_modes or TIMER_MODES,
+            grace_seconds=0,
+        )
         self.sockets = {
             "Esteban": RecordingSocket(),
             "Ana": ana_socket or RecordingSocket(),
@@ -1751,13 +1804,15 @@ class Trio:
         }
         self.sessions = {
             name: ClientSession(
-                socket, self.registry, hub, rooms, TURN_ORDER, vote_seconds
+                socket, self.registry, hub, rooms, TURN_ORDER, timing
             )
             for name, socket in self.sockets.items()
         }
 
     async def start(self) -> None:
-        await self.sessions["Esteban"].handle(create_message(maxPlayers=3))
+        await self.sessions["Esteban"].handle(
+            create_message(maxPlayers=3, timer=self.timer)
+        )
         await self.sessions["Ana"].handle(join_message())
         await self.sessions["Luis"].handle(join_message(**LUIS_JOINS))
 
@@ -1873,6 +1928,306 @@ def test_a_game_ending_during_an_expiry_does_not_cut_off_its_messages() -> None:
         types = types_of(game.sockets["Luis"].sent)
         assert types[types.index("vote_failed") :][:2] == [
             "vote_failed",
+            "game_state",
+        ]
+        assert types[-1] == "game_over"
+
+    asyncio.run(scenario())
+
+
+def use_timers(start: float, increment: float, grace: float = 0) -> None:
+    """Make "fast" last what a test needs."""
+    modes = {
+        TimerMode.NONE: None,
+        TimerMode.FAST: TimerSettings(start, increment),
+    }
+    app.dependency_overrides[get_timer_modes] = lambda: modes
+    app.dependency_overrides[get_grace_seconds] = lambda: grace
+
+
+def test_a_started_timed_game_sends_the_clocks_of_the_configured_mode(
+    client: TestClient,
+) -> None:
+    use_timers(start=0.75, increment=0.2)
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        request(host, create_message(timer="fast"))
+        ana.send_json(join_message())
+
+        _, started = receive_types(ana, 2)
+
+        state = started["state"]
+        assert (started["type"], state["timer"]) == ("game_started", "fast")
+        # A little may have run between the start and the message.
+        assert 700 < state["clocks"]["Ana"] <= 750
+        assert state["clocks"]["Esteban"] == 750
+        assert state["chooseMsLeft"] is None
+
+
+def test_the_grace_window_is_half_a_second_by_default() -> None:
+    assert get_grace_seconds() == 0.5
+
+
+def test_the_timer_modes_are_the_official_ones_by_default() -> None:
+    assert get_timer_modes() is TIMER_MODES
+
+
+def start_timed(
+    host: WebSocketTestSession, *others: WebSocketTestSession
+) -> None:
+    """Start a "fast" game of two or three players and read its messages.
+
+    Nothing is read with a probe: a timeout could arrive before its reply.
+    """
+    host.send_json(create_message(timer="fast", maxPlayers=1 + len(others)))
+    host.receive_json()
+    joins = [join_message(), join_message(**LUIS_JOINS)]
+    joined = [host]
+    for socket, message in zip(others, joins):
+        socket.send_json(message)
+        assert socket.receive_json()["type"] == "game_joined"
+        for earlier in joined:
+            assert earlier.receive_json()["type"] == "game_updated"
+        joined.append(socket)
+    for socket in joined:
+        assert socket.receive_json()["type"] == "game_started"
+
+
+def test_a_turn_that_runs_out_of_time_is_announced_to_every_player(
+    client: TestClient,
+) -> None:
+    use_timers(start=0.4, increment=0.2)
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_timed(host, ana, luis)
+
+        for socket in (ana, host, luis):
+            timed_out, updated = receive_types(socket, 2)
+
+            assert timed_out == {"type": "turn_timed_out", "player": "Ana"}
+            assert updated["type"] == "game_state"
+            state = updated["state"]
+            assert state["currentPlayer"] == "Esteban"
+            assert state["clocks"]["Ana"] == 400
+            assert state["lastMove"] is None
+
+        ana.send_json(mark(0, 0))
+
+        assert ana.receive_json() == {"type": "error", "code": "not_your_turn"}
+
+
+def test_every_new_turn_gets_its_own_timeout(client: TestClient) -> None:
+    use_timers(start=0.2, increment=0.2)
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_timed(host, ana)
+
+        timed_out = [receive_types(ana, 2)[0]["player"] for _ in range(3)]
+
+        assert timed_out == ["Ana", "Esteban", "Ana"]
+
+
+def test_a_move_within_the_grace_window_counts_as_in_time(
+    client: TestClient,
+) -> None:
+    use_timers(start=0.1, increment=0.2, grace=1)
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_timed(host, ana)
+        # Past the end of "Ana"'s clock, and well within the grace window.
+        time.sleep(0.3)
+
+        ana.send_json(mark(0, 0))
+
+        for socket in (ana, host):
+            moved = socket.receive_json()
+            assert moved["type"] == "game_state"
+            assert moved["state"]["clocks"]["Ana"] == 200
+        # The first timeout of the game is the one of the next turn.
+        assert ana.receive_json() == {"type": "turn_timed_out", "player": "Esteban"}
+
+
+def test_an_expired_choose_clock_picks_the_first_candidate(
+    client: TestClient, registry: GameRegistry
+) -> None:
+    # Half the increment rounds up to a choose clock of one second.
+    use_timers(start=30, increment=0.2)
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_timed(host, ana)
+        match = registry.list()[0].match
+        for row, col in [(0, 0), (0, 2), (0, 4), (1, 0), (1, 1), (1, 3), (1, 4)]:
+            match.board[row][col] = Cell("Ana")
+        ana.send_json(mark(1, 2))
+        choosing = ana.receive_json()["state"]
+        host.receive_json()
+        assert (choosing["phase"], choosing["chooseMsLeft"] > 900) == ("choose", True)
+
+        for socket in (ana, host):
+            picked = socket.receive_json()
+
+            # No `turn_timed_out` comes first.
+            assert picked["type"] == "game_state"
+            state = picked["state"]
+            assert state["scores"] == {"Ana": 1, "Esteban": 0}
+            assert state["currentPlayer"] == "Esteban"
+            assert state["chooseMsLeft"] is None
+            for cell in choosing["candidates"][0] if socket is ana else []:
+                assert state["board"][cell["row"]][cell["col"]]["disabled"]
+
+
+def test_no_turn_times_out_during_a_vote_and_the_countdown_resumes(
+    client: TestClient,
+) -> None:
+    use_timers(start=0.4, increment=0.2)
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+    ):
+        start_timed(host, ana)
+        ana.send_json(PROPOSE)
+        frozen = ana.receive_json()["state"]["clocks"]["Ana"]
+        host.receive_json()
+
+        time.sleep(0.6)
+        # No timer runs, so a probe cannot race with a timeout.
+        assert pending_messages(host) == []
+        host.send_json(vote_end(False))
+
+        _, resumed, timed_out, _ = receive_types(ana, 4)
+        assert resumed["state"]["clocks"]["Ana"] <= frozen
+        assert timed_out == {"type": "turn_timed_out", "player": "Ana"}
+
+
+def test_the_next_player_is_timed_when_the_current_one_leaves(
+    client: TestClient,
+) -> None:
+    use_timers(start=0.4, increment=0.2)
+    with (
+        client.websocket_connect("/api/ws") as host,
+        client.websocket_connect("/api/ws") as ana,
+        client.websocket_connect("/api/ws") as luis,
+    ):
+        start_timed(host, ana, luis)
+
+        ana.send_json(LEAVE)
+
+        for socket in (host, luis):
+            left, timed_out, _ = receive_types(socket, 3)
+            assert left["state"]["currentPlayer"] == "Esteban"
+            assert timed_out == {"type": "turn_timed_out", "player": "Esteban"}
+
+
+def timed_trio() -> Trio:
+    """A timed three-player game whose clocks never run out during a test."""
+    game = Trio()
+    game.timer = "fast"
+    return game
+
+
+def fill_all_but_one_cell(game: Trio) -> None:
+    leave_one_cell_empty(game.registry, {})
+
+
+@pytest.mark.parametrize(
+    ("prepare", "actions"),
+    [
+        pytest.param(fill_all_but_one_cell, [("Ana", mark(9, 11))], id="board-full"),
+        pytest.param(
+            None,
+            [("Ana", PROPOSE), ("Esteban", vote_end(True))],
+            id="vote-passes",
+        ),
+        pytest.param(None, [("Esteban", LEAVE), ("Ana", LEAVE)], id="last-player"),
+    ],
+)
+def test_a_game_that_ends_leaves_no_turn_timer(
+    prepare: Callable[[Trio], None] | None,
+    actions: list[tuple[str, dict[str, Any]]],
+) -> None:
+    async def scenario() -> None:
+        game = timed_trio()
+        await game.start()
+        table = game.sessions["Luis"].table
+        assert table.turn_timer is not None
+        if prepare:
+            prepare(game)
+        timers = [table.turn_timer]
+
+        for name, message in actions:
+            await game.send(name, message)
+            if table.turn_timer is not None:
+                timers.append(table.turn_timer)
+        sent = game.sent_counts()
+        await settle_tasks()
+
+        assert table.turn_timer is None
+        assert all(timer.cancelled() for timer in timers)
+        assert game.sent_counts() == sent
+
+    asyncio.run(scenario())
+
+
+def test_an_untimed_game_never_has_a_turn_timer() -> None:
+    async def scenario() -> None:
+        game = Trio()
+        await game.start()
+        table = game.sessions["Luis"].table
+        assert table.turn_timer is None
+
+        for name, message in [
+            ("Ana", mark(0, 0)),
+            ("Esteban", PROPOSE),
+            ("Ana", vote_end(False)),
+            ("Luis", vote_end(False)),
+            ("Esteban", LEAVE),
+        ]:
+            await game.send(name, message)
+
+            assert table.turn_timer is None
+
+    asyncio.run(scenario())
+
+
+class StallingTimeoutSocket(StallingSocket):
+    """Holds back its first `turn_timed_out` until it is released."""
+
+    held_type = "turn_timed_out"
+
+
+def test_a_change_during_a_timeout_does_not_cut_off_its_messages() -> None:
+    async def scenario() -> None:
+        slow = StallingTimeoutSocket()
+        modes = {TimerMode.FAST: TimerSettings(0.01, 0.2)}
+        game = Trio(ana_socket=slow, timer_modes=modes)
+        game.timer = "fast"
+        await game.start()
+        # The timeout is now stuck sending to "Ana", the second to be served.
+        await asyncio.wait_for(slow.stalled.wait(), timeout=5)
+
+        async def leave_until_the_game_ends() -> None:
+            await game.send("Esteban", LEAVE)
+            await game.send("Ana", LEAVE)
+
+        leaving = asyncio.create_task(leave_until_the_game_ends())
+        await settle_tasks()
+        slow.release.set()
+        await asyncio.wait_for(leaving, timeout=5)
+
+        types = types_of(game.sockets["Luis"].sent)
+        assert types[types.index("turn_timed_out") :][:2] == [
+            "turn_timed_out",
             "game_state",
         ]
         assert types[-1] == "game_over"

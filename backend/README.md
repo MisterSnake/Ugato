@@ -80,6 +80,42 @@ the updated list.
   passes (`vote`), the remaining players with the highest score win. The server
   sends `game_over`, removes the game, and frees its name and its connections.
 
+### Turn timer
+
+A game is created with one of these modes. The first number is the starting
+time and the second the increment, in seconds.
+
+| `timer` | Mode | Start | Increment |
+|---|---|---|---|
+| `none` | No timer | no clocks | |
+| `slow` | Slow 60-15 | 60 | 15 |
+| `normal` | Normal 30-10 | 30 | 10 |
+| `fast` | Fast 10-5 | 10 | 5 |
+
+With `none`, nothing below applies: nobody can run out of time. In a timed game
+every player has their own clock, and the server alone decides the time.
+
+- **Running**: all clocks start at the mode's starting time, and the first
+  player's runs. A clock runs only on its player's turn, in the `mark` phase,
+  with no vote open.
+- **Increment**: a turn that ends with a move (a mark that completes at most one
+  U, or a choice) adds the increment to what is left. There is no upper limit.
+- **Running out**: the turn is lost with no mark and no increment, the player's
+  clock goes back to the starting time and the turn passes. Everyone still in the
+  game gets `turn_timed_out` and then `game_state`.
+- **Choose clock**: when a mark completes several Us, the player's clock stops
+  and a choose clock of `ceil(increment / 2) * (n - 1)` seconds starts, for `n`
+  candidates. Unused choose time is lost. If it runs out, the server chooses the
+  first candidate: the player scores and gains the increment, and everyone gets
+  `game_state`.
+- **Votes**: the proposer's clock does not run while the vote is open, and
+  resumes from the same value if it fails.
+- **Leaving**: if the current player leaves, their clock stops, any choose clock
+  is dropped and the next player's clock runs.
+- **Grace window**: the server acts on a clock 500 ms after it reaches 0, so a
+  move that arrives within that time is accepted. A clock never shows less than
+  0. A move that arrives after the turn was lost gets `not_your_turn`.
+
 ### Voting to end the game
 
 - **Proposing**: on their turn, in the `mark` phase, a player with attempts left
@@ -112,7 +148,7 @@ the updated list.
 | `type` | Fields |
 |---|---|
 | `subscribe_lobby` | none |
-| `create_game` | `username`, `color`, `gameName`, `maxPlayers` (optional, default 2), `boardWidth`, `boardHeight` |
+| `create_game` | `username`, `color`, `gameName`, `maxPlayers` (optional, default 2), `boardWidth`, `boardHeight`, `timer` (optional, default `none`) |
 | `cancel_game` | none. Only a host's game that has not started is cancelled. |
 | `join_game` | `gameName` (matched ignoring case and surrounding whitespace), `username`, `color` |
 | `leave_game` | none. Before the start only a joined player leaves; a host uses `cancel_game`. After the start any player leaves, host included. |
@@ -128,12 +164,14 @@ Field rules:
 - `color`: `red`, `blue`, `yellow`, `green`, `orange` or `purple`.
 - `maxPlayers`: integer from 2 to 4.
 - `boardWidth` and `boardHeight`: integers from 8 to 30, width >= height.
+- `timer`: `none`, `slow`, `normal` or `fast`. It cannot be changed later. See
+  [Turn timer](#turn-timer).
 
 ### Server to client
 
 | `type` | Fields |
 |---|---|
-| `game_created` | `game`: `{name, maxPlayers, boardWidth, boardHeight, status, players: [{name, color}]}`. `status` is `waiting` or `playing`. For a game in progress, `players` lists only those still in it, in join order. |
+| `game_created` | `game`: `{name, maxPlayers, boardWidth, boardHeight, timer, status, players: [{name, color}]}`. `timer` is the game's timer mode. `status` is `waiting` or `playing`. For a game in progress, `players` lists only those still in it, in join order. |
 | `game_cancelled` | none. Also sent when there was no game to cancel. |
 | `game_joined` | `game`: same fields as in `game_created`. `players` is in join order, host first. |
 | `game_left` | none. Also sent when the connection had not joined a game. |
@@ -141,8 +179,9 @@ Field rules:
 | `game_closed` | none. The host cancelled or disconnected before the start; this connection is no longer in a game. |
 | `games_list` | `games`: list of games, each with the same fields as `game` in `game_created`. Waiting games come first, then games in progress; each group is newest first. |
 | `game_started` | `state`: see [Game state](#game-state) |
-| `game_state` | `state`: see [Game state](#game-state). Sent after a move, a proposal or a vote, after a vote failed and after a player left. |
+| `game_state` | `state`: see [Game state](#game-state). Sent after a move, a proposal or a vote, after a vote failed, after a player left and after a clock ran out. |
 | `vote_failed` | `proposer`, `endVotes`, `continueVotes`. A vote to end failed; a `game_state` follows. |
+| `turn_timed_out` | `player`: who ran out of time and lost the turn. A `game_state` follows. |
 | `game_over` | `winners` (names; several make a draw), `scores` (`{name: points}`, every player), `reason` (`board_full`, `last_player` or `vote`), `board` (the final one, as in the game state). This connection is no longer in a game. |
 | `error` | `code`, plus `field` for input errors |
 
@@ -164,6 +203,9 @@ lists everyone.
 | `candidates` | only for the current player in the `choose` phase: a list of Us, each 5 `{row, col}`, in a stable order |
 | `endProposalsLeft` | `{name: attempts}`, every player: the proposals to end each one has left |
 | `vote` | the open vote, or `null`: see below |
+| `timer` | the timer mode: `none`, `slow`, `normal` or `fast` |
+| `clocks` | `{name: milliseconds}`, every player: the time left on each clock when the message is sent, as integers. `null` for `none`. See [Turn timer](#turn-timer). |
+| `chooseMsLeft` | the milliseconds left on the choose clock when the message is sent, or `null` when it is not running |
 
 The `vote` object differs per recipient only in `yourVote`:
 
@@ -181,7 +223,7 @@ The socket stays open after every error, and only one error is reported per
 request. `already_in_game` is always checked first.
 
 - `create_game`: `invalid_username`, `invalid_color`, `invalid_game_name`,
-  `invalid_max_players`, `invalid_board`, then `name_taken`.
+  `invalid_max_players`, `invalid_board`, `invalid_timer`, then `name_taken`.
 - `join_game`: `invalid_username`, `invalid_color`, `game_not_found`,
   `game_in_progress`, `game_full`, `username_taken`, then `color_taken`. A
   missing or non-text `gameName` is reported as `game_not_found`.
@@ -201,6 +243,7 @@ request. `already_in_game` is always checked first.
 | `invalid_game_name` | `gameName` | Game name fails the name rules |
 | `invalid_max_players` | `maxPlayers` | Max players is outside 2-4 |
 | `invalid_board` | `board` | Board size is out of range or height > width |
+| `invalid_timer` | `timer` | Timer is not one of the four modes |
 | `name_taken` | `gameName` | Another game already uses this name |
 | `game_not_found` | `gameName` | No game has this name |
 | `game_in_progress` | `gameName` | The game has already started |

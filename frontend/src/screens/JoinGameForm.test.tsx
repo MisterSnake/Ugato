@@ -10,6 +10,7 @@ const game: GameSummary = {
   maxPlayers: 4,
   boardWidth: 12,
   boardHeight: 10,
+  timer: 'none',
   status: 'waiting',
   players: [{ name: 'Esteban', color: 'red' }],
 }

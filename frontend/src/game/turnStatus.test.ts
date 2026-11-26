@@ -14,4 +14,13 @@ describe('turnStatus', () => {
       expect(turnStatus(makeState({ phase }), me)).toEqual({ text, isMyTurn })
     },
   )
+
+  it.each([
+    ['Ana', 'Choose a U'],
+    ['Esteban', 'Ana is choosing a U'],
+  ])('with a choose clock, tells %s "%s"', (me, text) => {
+    const state = makeState({ phase: 'choose', chooseMsLeft: 5_000 })
+
+    expect(turnStatus(state, me).text).toBe(text)
+  })
 })

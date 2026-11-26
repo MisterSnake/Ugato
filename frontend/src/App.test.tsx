@@ -14,6 +14,7 @@ const game: GameSummary = {
   maxPlayers: 2,
   boardWidth: 12,
   boardHeight: 10,
+  timer: 'none',
   status: 'waiting',
   players: [{ name: 'Esteban', color: 'red' }],
 }
@@ -126,6 +127,7 @@ describe('App flow', () => {
         maxPlayers: 2,
         boardWidth: 12,
         boardHeight: 10,
+        timer: 'none',
       },
     ])
   })
@@ -389,6 +391,7 @@ const duel: GameSummary = {
   maxPlayers: 3,
   boardWidth: 12,
   boardHeight: 10,
+  timer: 'none',
   status: 'waiting',
   players: [{ name: 'Esteban', color: 'red' }],
 }
@@ -847,6 +850,60 @@ describe('App voting to end', () => {
     receive(server, { type: 'game_state', state: moved })
 
     expect(screen.getByText(GOES_ON)).toBeInTheDocument()
+  })
+})
+
+// "Ana" moves first, and the user of `startAsHost` is "Esteban".
+const passed = { ...opening, currentPlayer: 'Esteban' }
+const ANA_TIMED_OUT = 'Ana ran out of time'
+
+async function timeOutAna() {
+  const app = await startAsHost()
+  receive(app.server, { type: 'turn_timed_out', player: 'Ana' })
+  receive(app.server, { type: 'game_state', state: passed })
+  return app
+}
+
+describe('App turn lost to the clock', () => {
+  it('keeps the notice through the state sent with the timeout', async () => {
+    await timeOutAna()
+
+    expect(screen.getByText(ANA_TIMED_OUT)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['a player leaving', { ...passed, leftPlayers: ['Luis'] }],
+    [
+      'a proposal to end',
+      { ...passed, vote: { ...voting.vote!, proposer: 'Esteban' } },
+    ],
+  ])('keeps the notice after %s', async (_, state) => {
+    const { server } = await timeOutAna()
+
+    receive(server, { type: 'game_state', state })
+
+    expect(screen.getByText(ANA_TIMED_OUT)).toBeInTheDocument()
+  })
+
+  it('drops the notice after the next move', async () => {
+    const { server } = await timeOutAna()
+
+    receive(server, {
+      type: 'game_state',
+      state: { ...opening, lastMove: { row: 2, col: 3 } },
+    })
+
+    expect(screen.queryByText(ANA_TIMED_OUT)).not.toBeInTheDocument()
+  })
+
+  it('shows only the latest player to run out of time', async () => {
+    const { server } = await timeOutAna()
+
+    receive(server, { type: 'turn_timed_out', player: 'Esteban' })
+    receive(server, { type: 'game_state', state: opening })
+
+    expect(screen.getByText('You ran out of time')).toBeInTheDocument()
+    expect(screen.queryByText(ANA_TIMED_OUT)).not.toBeInTheDocument()
   })
 })
 

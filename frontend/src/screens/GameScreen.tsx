@@ -10,6 +10,8 @@ import { turnStatus } from '../game/turnStatus'
 import { canProposeEnd } from '../game/voteStatus'
 import { colorLabel } from './colorLabel'
 import { GameBoard } from './GameBoard'
+import { PlayerClock } from './PlayerClock'
+import { TurnText } from './TurnText'
 import { VotePanel } from './VotePanel'
 
 interface GameScreenProps {
@@ -20,6 +22,8 @@ interface GameScreenProps {
   me: string
   /** A vote that has just failed. */
   failedVote?: VoteFailed
+  /** Who has just lost a turn to the clock. */
+  timedOut?: string
   onMark: (row: number, col: number) => void
   onChoose: (index: number) => void
   onPropose: () => void
@@ -32,6 +36,7 @@ export function GameScreen({
   players,
   me,
   failedVote,
+  timedOut,
   onMark,
   onChoose,
   onPropose,
@@ -96,11 +101,13 @@ export function GameScreen({
         data-testid="turn-bar"
         className={`turn-bar color-${currentColor}${status.isMyTurn ? ' mine' : ''}`}
       >
-        <p aria-live="polite" className="turn-text">
-          {candidate
-            ? `${status.text} (${index + 1} of ${candidates.length})`
-            : status.text}
-        </p>
+        <TurnText
+          state={state}
+          text={status.text}
+          position={
+            candidate ? `${index + 1} of ${candidates.length}` : undefined
+          }
+        />
         <p className="turn-player">
           <span aria-hidden="true" className="swatch" />
           {currentColor &&
@@ -135,8 +142,14 @@ export function GameScreen({
 
       {state.vote && <VotePanel vote={state.vote} me={me} onVote={onVote} />}
       {failedVote && (
-        <p role="status" className="vote-notice">
+        <p role="status" className="game-notice">
           {`The game goes on (${failedVote.endVotes} to end, ${failedVote.continueVotes} to keep playing)`}
+        </p>
+      )}
+
+      {timedOut && (
+        <p role="status" className="game-notice">
+          {`${timedOut === me ? 'You' : timedOut} ran out of time`}
         </p>
       )}
 
@@ -158,6 +171,16 @@ export function GameScreen({
             />
             {`${name} ${state.scores[name]}`}
             {state.leftPlayers.includes(name) && ' (left)'}
+            {state.clocks && (
+              <>
+                {' '}
+                <PlayerClock
+                  state={state}
+                  player={name}
+                  msLeft={state.clocks[name]}
+                />
+              </>
+            )}
           </li>
         ))}
       </ol>

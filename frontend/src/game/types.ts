@@ -9,6 +9,8 @@ export const COLORS = [
 
 export type Color = (typeof COLORS)[number]
 
+export type TimerMode = 'none' | 'slow' | 'normal' | 'fast'
+
 export interface CreateGameRequest {
   username: string
   color: Color
@@ -16,6 +18,7 @@ export interface CreateGameRequest {
   maxPlayers: number
   boardWidth: number
   boardHeight: number
+  timer: TimerMode
 }
 
 export interface JoinGameRequest {
@@ -38,6 +41,7 @@ export interface GameSummary {
   maxPlayers: number
   boardWidth: number
   boardHeight: number
+  timer: TimerMode
   status: GameStatus
   /** For a game in progress, only those still in it. */
   players: Player[]
@@ -84,8 +88,18 @@ export interface GameState {
   /** How many more times each player can propose ending the game. */
   endProposalsLeft: Record<string, number>
   vote: Vote | null
+  timer: TimerMode
+  /** What is left on each clock, in ms. `null` in an untimed game. */
+  clocks: Record<string, number> | null
+  /** What is left to choose a U, in ms, while the choose clock runs. */
+  chooseMsLeft: number | null
   /** Only sent to the player who has to choose a U. */
   candidates?: Position[][]
+}
+
+export interface TurnTimedOut {
+  /** Who ran out of time and lost the turn. */
+  player: string
 }
 
 export interface GameOver {
@@ -106,6 +120,7 @@ export type ErrorField =
   | 'gameName'
   | 'maxPlayers'
   | 'board'
+  | 'timer'
 
 export type ErrorCode =
   | 'invalid_username'
@@ -114,6 +129,7 @@ export type ErrorCode =
   | 'name_taken'
   | 'invalid_max_players'
   | 'invalid_board'
+  | 'invalid_timer'
   | 'game_not_found'
   | 'game_full'
   | 'username_taken'
@@ -151,5 +167,6 @@ export type ServerMessage =
   | { type: 'game_started'; state: GameState }
   | { type: 'game_state'; state: GameState }
   | ({ type: 'vote_failed' } & VoteFailed)
+  | ({ type: 'turn_timed_out' } & TurnTimedOut)
   | ({ type: 'game_over' } & GameOver)
   | ({ type: 'error' } & ServerError)

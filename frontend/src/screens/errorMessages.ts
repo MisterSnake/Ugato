@@ -17,6 +17,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   name_taken: 'That game name is already taken.',
   invalid_max_players: `Max players must be between ${MIN_PLAYERS} and ${MAX_PLAYERS}.`,
   invalid_board: `Width and height must be ${BOARD_MIN_SIZE}-${BOARD_MAX_SIZE}, and height cannot exceed width.`,
+  invalid_timer: 'Choose a timer.',
   game_not_found: 'That game is no longer available.',
   game_full: 'That game is full.',
   username_taken: 'That name is already used in this game.',
