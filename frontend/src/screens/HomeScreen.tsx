@@ -20,7 +20,7 @@ export function HomeScreen({
 }: HomeScreenProps) {
   return (
     <main className="screen">
-      <h1 className="logo">U Cat</h1>
+      <h1 className="logo">U Cat Tests</h1>
       {notice && (
         <p role="alert" className="notice">
           {notice}
