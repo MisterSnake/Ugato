@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import type { GameOver } from '../game/types'
+import type { GameOver, Player } from '../game/types'
 import { emptyBoard } from '../test/gameState'
 import { WinnerScreen } from './WinnerScreen'
 
@@ -12,11 +12,18 @@ const gameOver: GameOver = {
   board: emptyBoard(12, 10),
 }
 
+const players: Player[] = [
+  { name: 'Esteban', color: 'red' },
+  { name: 'Ana', color: 'blue' },
+  { name: 'Luis', color: 'green' },
+]
+
 function renderWinner(overrides: Partial<GameOver> = {}) {
   const onClose = vi.fn()
   render(
     <WinnerScreen
       gameOver={{ ...gameOver, ...overrides }}
+      players={players}
       me="Ana"
       onClose={onClose}
     />,
@@ -73,6 +80,29 @@ describe('WinnerScreen', () => {
     expect(
       screen.getByRole('heading', { name: 'Draw between Esteban and Ana' }),
     ).toBeInTheDocument()
+  })
+
+  it("gives each final score a swatch in the player's color", () => {
+    renderWinner()
+
+    const swatches = within(
+      screen.getByRole('list', { name: 'Final scores' }),
+    )
+      .getAllByRole('listitem')
+      .map((item) => item.querySelector('.swatch')?.className)
+
+    // Best first: Esteban, Ana, Luis.
+    expect(swatches).toEqual([
+      'swatch color-red',
+      'swatch color-blue',
+      'swatch color-green',
+    ])
+  })
+
+  it('styles the close button as a primary button', () => {
+    renderWinner()
+
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveClass('btn')
   })
 
   it('closes', async () => {

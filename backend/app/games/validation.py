@@ -7,7 +7,7 @@ from app.games.models import Color, Game, GameStatus, Player, TimerMode
 NAME_MIN_LENGTH = 3
 NAME_MAX_LENGTH = 20
 MIN_PLAYERS = 2
-MAX_PLAYERS = 4
+MAX_PLAYERS = 5
 DEFAULT_MAX_PLAYERS = 2
 BOARD_MIN_SIZE = 8
 BOARD_MAX_SIZE = 30

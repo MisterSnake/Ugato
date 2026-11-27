@@ -92,7 +92,7 @@ export function GameScreen({
     }
   }, [])
   useEffect(() => {
-    document.title = status.isMyTurn ? 'Your turn! - Ugato' : 'Ugato'
+    document.title = status.isMyTurn ? 'Your turn! - U Cat' : 'U Cat'
   }, [status.isMyTurn])
 
   return (
@@ -114,7 +114,7 @@ export function GameScreen({
             `${state.currentPlayer} (${colorLabel(currentColor)})`}
         </p>
         {selected && (
-          <button type="button" onClick={() => mark(selected)}>
+          <button type="button" className="mark" onClick={() => mark(selected)}>
             Mark
           </button>
         )}
@@ -131,13 +131,17 @@ export function GameScreen({
             </button>
           </div>
         )}
-        <button
-          type="button"
-          disabled={!canProposeEnd(state, me)}
-          onClick={onPropose}
-        >
-          {`Propose ending (${state.endProposalsLeft[me]} left)`}
-        </button>
+        {/* Hidden next to "Mark", so a tap meant for it cannot open a vote. */}
+        {!selected && (
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={!canProposeEnd(state, me)}
+            onClick={onPropose}
+          >
+            {`Propose ending (${state.endProposalsLeft[me]} left)`}
+          </button>
+        )}
       </header>
 
       {state.vote && <VotePanel vote={state.vote} me={me} onVote={onVote} />}
@@ -184,7 +188,7 @@ export function GameScreen({
           </li>
         ))}
       </ol>
-      <button type="button" className="leave" onClick={onLeave}>
+      <button type="button" className="leave btn-danger" onClick={onLeave}>
         Leave game
       </button>
     </main>

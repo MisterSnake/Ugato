@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { createGameSocket } from './game/gameSocket'
 import type { GameSocket, GameSocketFactory } from './game/gameSocket'
+import { gameSocketUrl } from './game/socketUrl'
 import type {
   CreateGameRequest,
   GameOver,
@@ -39,7 +40,7 @@ type View =
       /** Who last lost a turn to the clock, until the next move. */
       timedOut?: string
     }
-  | { screen: 'finished'; gameOver: GameOver; me: string }
+  | { screen: 'finished'; gameOver: GameOver; players: Player[]; me: string }
 
 const CONNECTING: LobbyState = { status: 'connecting', games: [] }
 const DISCONNECTED: LobbyState = { status: 'disconnected', games: [] }
@@ -55,12 +56,6 @@ const GAME_CLOSED_NOTICE = 'The host closed the game'
 
 interface AppProps {
   createSocket?: GameSocketFactory
-}
-
-// Same origin as the page; in development, Vite proxies /api to the backend.
-function gameSocketUrl(): string {
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${protocol}://${window.location.host}/api/ws`
 }
 
 // The join form cannot outlive a game that is gone or has started.
@@ -169,7 +164,9 @@ function App({ createSocket = createGameSocket }: AppProps) {
   }
 
   function openSocket(): GameSocket {
-    const socket = createSocket(gameSocketUrl())
+    const socket = createSocket(
+      gameSocketUrl(import.meta.env.VITE_WS_URL, window.location),
+    )
     socket.on('games_list', (games) => {
       setLobby({ status: 'ready', games })
       setView((current) => viewAfterLobbyUpdate(current, games))
@@ -220,7 +217,12 @@ function App({ createSocket = createGameSocket }: AppProps) {
       waitingGameFlag.clear()
       setView((current) =>
         current.screen === 'playing'
-          ? { screen: 'finished', gameOver, me: current.me }
+          ? {
+              screen: 'finished',
+              gameOver,
+              players: current.players,
+              me: current.me,
+            }
           : current,
       )
     })
@@ -327,6 +329,7 @@ function App({ createSocket = createGameSocket }: AppProps) {
       return (
         <WinnerScreen
           gameOver={view.gameOver}
+          players={view.players}
           me={view.me}
           onClose={() => setView({ screen: 'home' })}
         />

@@ -87,6 +87,16 @@ def test_create_game_replies_with_summary_and_stores_game(
         ]
 
 
+def test_create_game_accepts_five_players(client: TestClient) -> None:
+    with client.websocket_connect("/api/ws") as socket:
+        socket.send_json(create_message(maxPlayers=5))
+
+        reply = socket.receive_json()
+
+        assert reply["type"] == "game_created"
+        assert reply["game"]["maxPlayers"] == 5
+
+
 def test_validation_error_is_reported_and_socket_stays_usable(
     client: TestClient, registry: GameRegistry
 ) -> None:

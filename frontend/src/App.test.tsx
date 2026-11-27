@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StrictMode } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { createGameSocket } from './game/gameSocket'
 import type { GameSocketFactory } from './game/gameSocket'
@@ -197,6 +197,30 @@ function expectDisconnectedLobby() {
   expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   expect(createGameButton()).toBeDisabled()
 }
+
+describe('App WebSocket endpoint', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('connects to the URL set in VITE_WS_URL', () => {
+    vi.stubEnv('VITE_WS_URL', 'wss://backend.example/api/ws')
+
+    render(<App createSocket={fakeSocketFactory} />)
+
+    expect(FakeWebSocket.latest.url).toBe('wss://backend.example/api/ws')
+  })
+
+  it('connects to the page origin without VITE_WS_URL', () => {
+    vi.stubEnv('VITE_WS_URL', undefined)
+
+    render(<App createSocket={fakeSocketFactory} />)
+
+    expect(FakeWebSocket.latest.url).toBe(
+      `ws://${window.location.host}/api/ws`,
+    )
+  })
+})
 
 describe('App cancel and lost connection', () => {
   it('returns to a current lobby over the same connection on cancel', async () => {

@@ -30,7 +30,7 @@ function renderForm(
 
 const nameField = () => screen.getByLabelText('Your name')
 const color = (name: string) => screen.getByRole('radio', { name })
-const colorGroup = () => screen.getByRole('group', { name: 'Color' })
+const colorGroup = () => screen.getByRole('group', { name: 'Choose your color' })
 const joinButton = () => screen.getByRole('button', { name: 'Join' })
 
 describe('JoinGameForm', () => {

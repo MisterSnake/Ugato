@@ -57,6 +57,12 @@ describe('HomeScreen', () => {
     expect(onCreateGame).toHaveBeenCalledOnce()
   })
 
+  it('shows the brand name', () => {
+    renderHome()
+
+    expect(screen.getByRole('heading', { name: 'U Cat' })).toBeInTheDocument()
+  })
+
   it('shows no notice by default', () => {
     renderHome()
 
@@ -194,6 +200,35 @@ describe('HomeScreen', () => {
     expect(within(row).getByText('2 / 3')).toBeInTheDocument()
     expect(within(row).getByText('In progress')).toBeInTheDocument()
     expect(within(row).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('tells games in progress apart from waiting ones', () => {
+    const [waiting] = twoGames.games
+    renderHome({
+      lobby: { status: 'ready', games: [waiting, inProgress] },
+    })
+    const [waitingRow, playingRow] = screen.getAllByRole('listitem')
+
+    expect(playingRow).toHaveClass('playing')
+    expect(waitingRow).not.toHaveClass('playing')
+  })
+
+  it('highlights the player count of a full game', () => {
+    const [waiting] = twoGames.games
+    renderHome({
+      lobby: { status: 'ready', games: [waiting, inProgress] },
+    })
+
+    expect(screen.getByText('2 / 2')).toHaveClass('full')
+    expect(screen.getByText('1 / 2')).not.toHaveClass('full')
+  })
+
+  it("shows a swatch in the host's color", () => {
+    renderHome({ lobby: twoGames })
+
+    expect(
+      screen.getByText('Esteban (Red)').querySelector('.swatch'),
+    ).toHaveClass('color-red')
   })
 
   it('does nothing when a row is clicked outside its button', async () => {

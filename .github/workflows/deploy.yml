@@ -1,0 +1,213 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# One deployment at a time, and a running one is never cut short.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPOSITORY: mistersnake/ugato-backend
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+      - run: uv sync --frozen
+      - run: uv run pytest -q
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --run
+      - run: npm run build
+
+  image:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          image="ghcr.io/$IMAGE_REPOSITORY:$GITHUB_SHA"
+          docker build \
+            --build-arg "APP_VERSION=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --tag "$image" \
+            backend/
+          docker push "$image"
+
+  infra:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      backendFqdn: ${{ steps.deployment.outputs.backendFqdn }}
+      frontendHostname: ${{ steps.deployment.outputs.frontendHostname }}
+      staticSiteName: ${{ steps.deployment.outputs.staticSiteName }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # Container Apps pulls without credentials, again on every cold start.
+      - name: Check that the image can be pulled anonymously
+        run: |
+          pull_anonymously() {
+            local token
+            token=$(curl -fsS --retry 3 \
+              "https://ghcr.io/token?scope=repository:$IMAGE_REPOSITORY:pull" |
+              jq -er .token) || return 1
+            curl -fsS --retry 3 --head --output /dev/null \
+              -H "Authorization: Bearer $token" \
+              -H "Accept: application/vnd.oci.image.index.v1+json" \
+              -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+              -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+              -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/$IMAGE_REPOSITORY/manifests/$GITHUB_SHA"
+          }
+          if ! pull_anonymously; then
+            echo "::error::ghcr.io/$IMAGE_REPOSITORY:$GITHUB_SHA cannot be pulled anonymously. Make the package public and re-run the failed jobs: see docs/DEPLOYMENT.md#hacer-publica-la-imagen"
+            exit 1
+          fi
+      - name: Deploy the Bicep template
+        id: deployment
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          outputs=$(az deployment group create \
+            --name "ugato-$GITHUB_SHA" \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters "image=ghcr.io/$IMAGE_REPOSITORY:$GITHUB_SHA" "appVersion=$GITHUB_SHA" \
+            --query properties.outputs \
+            --output json)
+          for name in backendFqdn frontendHostname staticSiteName; do
+            value=$(jq -er ".$name.value" <<< "$outputs")
+            echo "$name=$value" >> "$GITHUB_OUTPUT"
+          done
+
+  # Built after the infrastructure: the build needs the backend's address.
+  frontend:
+    needs: infra
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build
+        working-directory: frontend
+        env:
+          VITE_WS_URL: wss://${{ needs.infra.outputs.backendFqdn }}/api/ws
+        run: |
+          npm ci
+          npm run build
+          printf '{"version":"%s"}\n' "$GITHUB_SHA" > dist/version.json
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # Read on every run, so no deployment secret is stored in GitHub.
+      - name: Get the Static Web App deployment token
+        id: swa
+        env:
+          STATIC_SITE_NAME: ${{ needs.infra.outputs.staticSiteName }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          token=$(az staticwebapp secrets list \
+            --name "$STATIC_SITE_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query properties.apiKey \
+            --output tsv)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+      - uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.swa.outputs.token }}
+          action: upload
+          app_location: frontend/dist
+          output_location: ''
+          skip_app_build: true
+          skip_api_build: true
+
+  smoke:
+    needs: [infra, frontend]
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      BACKEND_URL: https://${{ needs.infra.outputs.backendFqdn }}
+      FRONTEND_URL: https://${{ needs.infra.outputs.frontendHostname }}
+    steps:
+      - name: Write the production URLs to the job summary
+        run: |
+          {
+            echo "## Production"
+            echo "- Game: $FRONTEND_URL"
+            echo "- Backend health: $BACKEND_URL/api/health"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check that production serves this commit
+        run: |
+          served_version() {
+            curl -fsS --max-time 20 "$1" | jq -er .version
+          }
+          deadline=$((SECONDS + 180))
+          while true; do
+            backend=$(served_version "$BACKEND_URL/api/health") || backend="no answer"
+            frontend=$(served_version "$FRONTEND_URL/version.json") || frontend="no answer"
+            if [[ $backend == "$GITHUB_SHA" && $frontend == "$GITHUB_SHA" ]]; then
+              echo "Both parts serve $GITHUB_SHA"
+              exit 0
+            fi
+            if ((SECONDS >= deadline)); then
+              break
+            fi
+            sleep 10
+          done
+          if [[ $backend != "$GITHUB_SHA" ]]; then
+            echo "::error::Backend does not serve $GITHUB_SHA (got: $backend)"
+          fi
+          if [[ $frontend != "$GITHUB_SHA" ]]; then
+            echo "::error::Frontend does not serve $GITHUB_SHA (got: $frontend)"
+          fi
+          exit 1

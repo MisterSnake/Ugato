@@ -9,6 +9,8 @@ function renderForm() {
   return { onSubmit }
 }
 
+const maxPlayers = () => screen.getByRole('group', { name: 'Max players' })
+
 describe('CreateGameForm fields', () => {
   it('has empty name and game name fields', () => {
     renderForm()
@@ -21,7 +23,7 @@ describe('CreateGameForm fields', () => {
     renderForm()
 
     const colors = within(
-      screen.getByRole('group', { name: 'Color' }),
+      screen.getByRole('group', { name: 'Choose your color' }),
     ).getAllByRole('radio')
 
     expect(colors.map((radio) => radio.closest('label')?.textContent)).toEqual([
@@ -35,12 +37,36 @@ describe('CreateGameForm fields', () => {
     for (const radio of colors) expect(radio).not.toBeChecked()
   })
 
+  it('gives each color radio a swatch of that color', () => {
+    renderForm()
+
+    for (const name of ['Red', 'Blue', 'Yellow', 'Green', 'Orange', 'Purple']) {
+      expect(screen.getByRole('radio', { name }).closest('label')).toHaveClass(
+        'color-option',
+        `color-${name.toLowerCase()}`,
+      )
+    }
+  })
+
   it('defaults to 2 max players and an 8 x 8 board', () => {
     renderForm()
 
-    expect(screen.getByLabelText('Max players')).toHaveValue('2')
+    expect(within(maxPlayers()).getByRole('radio', { name: '2' })).toBeChecked()
     expect(screen.getByLabelText('Board width')).toHaveValue(8)
     expect(screen.getByLabelText('Board height')).toHaveValue(8)
+  })
+
+  it('offers from 2 to 5 max players as radios', () => {
+    renderForm()
+
+    const radios = within(maxPlayers()).getAllByRole('radio')
+
+    expect(radios.map((radio) => radio.closest('label')?.textContent)).toEqual([
+      '2',
+      '3',
+      '4',
+      '5',
+    ])
   })
 
   it('offers the four timers with "No timer" preselected', () => {
@@ -76,7 +102,7 @@ describe('CreateGameForm validation', () => {
     const { onSubmit } = renderForm()
     const user = await fillForm()
 
-    await user.selectOptions(screen.getByLabelText('Max players'), '3')
+    await user.click(within(maxPlayers()).getByRole('radio', { name: '3' }))
     await user.click(submitButton())
 
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith({
@@ -88,6 +114,33 @@ describe('CreateGameForm validation', () => {
       boardHeight: 10,
       timer: 'none',
     })
+  })
+
+  it('submits a board size set with the step buttons', async () => {
+    const { onSubmit } = renderForm()
+    const user = await fillForm({ width: '12', height: '8' })
+    const taller = screen.getByRole('button', {
+      name: 'Increase board height',
+    })
+
+    await user.click(taller)
+    await user.click(taller)
+    await user.click(submitButton())
+
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ boardHeight: 10 }),
+    )
+  })
+
+  it('shows the board error for a typed value out of range', async () => {
+    const { onSubmit } = renderForm()
+    const user = await fillForm({ width: '31' })
+    await user.click(submitButton())
+
+    expect(
+      screen.getByRole('group', { name: 'Board size' }),
+    ).toHaveAccessibleDescription(/must be 8-30/i)
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   it('submits the chosen timer', async () => {
@@ -128,7 +181,7 @@ describe('CreateGameForm validation', () => {
       /name must be 3-20/i,
     )
     expect(
-      screen.getByRole('group', { name: 'Color' }),
+      screen.getByRole('group', { name: 'Choose your color' }),
     ).toHaveAccessibleDescription('Choose a color.')
     expect(screen.getByLabelText('Game name')).toHaveAccessibleDescription(
       /game name must be 3-20/i,
@@ -190,6 +243,23 @@ describe('CreateGameForm server errors', () => {
     await userEvent.selectOptions(timer, 'Slow 60-15')
 
     expect(timer).toBeValid()
+  })
+
+  it('shows a max players error on its group until another count is chosen', async () => {
+    render(
+      <CreateGameForm
+        onSubmit={vi.fn()}
+        serverError={{ field: 'maxPlayers', code: 'invalid_max_players' }}
+      />,
+    )
+
+    expect(maxPlayers()).toHaveAccessibleDescription(
+      'Max players must be between 2 and 5.',
+    )
+
+    await userEvent.click(screen.getByRole('radio', { name: '4' }))
+
+    expect(maxPlayers()).not.toHaveAccessibleDescription()
   })
 
   it('shows an error that has no field as a form message', () => {

@@ -216,16 +216,25 @@ export function GameBoard({
         </div>
       </div>
       <div className="zoom">
-        <button type="button" onClick={() => zoom(1 / ZOOM_STEP)}>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={() => zoom(1 / ZOOM_STEP)}
+        >
           -
         </button>
         <button
           type="button"
+          className="btn-ghost"
           onClick={() => setLayout({ ...layout, custom: null })}
         >
           Fit
         </button>
-        <button type="button" onClick={() => zoom(ZOOM_STEP)}>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={() => zoom(ZOOM_STEP)}
+        >
           +
         </button>
       </div>

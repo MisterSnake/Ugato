@@ -14,6 +14,8 @@ import type {
 } from '../game/types'
 import { ColorField } from './ColorField'
 import { ErrorMessage } from './ErrorMessage'
+import { ClockIcon, GridIcon, UserIcon, UsersIcon } from './icons'
+import { Stepper } from './Stepper'
 import { useFieldErrors } from './useFieldErrors'
 
 interface CreateGameFormProps {
@@ -74,16 +76,19 @@ export function CreateGameForm({
   return (
     <main className="screen">
       <h1>Create game</h1>
-      <form noValidate onSubmit={handleSubmit}>
+      <form className="card form-card" noValidate onSubmit={handleSubmit}>
         <div className="field">
           <label htmlFor="username">Your name</label>
-          <input
-            id="username"
-            value={values.username}
-            onChange={(event) => setValue('username', event.target.value)}
-            onBlur={() => errors.touch('username')}
-            {...errorProps('username')}
-          />
+          <div className="pill">
+            <UserIcon />
+            <input
+              id="username"
+              value={values.username}
+              onChange={(event) => setValue('username', event.target.value)}
+              onBlur={() => errors.touch('username')}
+              {...errorProps('username')}
+            />
+          </div>
           {errorMessage('username')}
         </div>
 
@@ -95,78 +100,96 @@ export function CreateGameForm({
 
         <div className="field">
           <label htmlFor="gameName">Game name</label>
-          <input
-            id="gameName"
-            value={values.gameName}
-            onChange={(event) => setValue('gameName', event.target.value)}
-            onBlur={() => errors.touch('gameName')}
-            {...errorProps('gameName')}
-          />
+          <div className="pill">
+            <input
+              id="gameName"
+              value={values.gameName}
+              onChange={(event) => setValue('gameName', event.target.value)}
+              onBlur={() => errors.touch('gameName')}
+              {...errorProps('gameName')}
+            />
+          </div>
           {errorMessage('gameName')}
         </div>
 
-        <div className="field">
-          <label htmlFor="maxPlayers">Max players</label>
-          <select
-            id="maxPlayers"
-            value={values.maxPlayers}
-            onChange={(event) => setValue('maxPlayers', event.target.value)}
-            {...errorProps('maxPlayers')}
-          >
+        <fieldset
+          className="field segments"
+          aria-describedby={errorProps('maxPlayers')['aria-describedby']}
+        >
+          <legend>Max players</legend>
+          <div className="segment-bar">
             {PLAYER_OPTIONS.map((count) => (
-              <option key={count} value={count}>
-                {count}
-              </option>
+              <label key={count} className="segment">
+                <input
+                  type="radio"
+                  name="maxPlayers"
+                  value={count}
+                  checked={values.maxPlayers === String(count)}
+                  onChange={(event) =>
+                    setValue('maxPlayers', event.target.value)
+                  }
+                  aria-invalid={errorProps('maxPlayers')['aria-invalid']}
+                />
+                <span>
+                  {values.maxPlayers === String(count) && <UsersIcon />}
+                  {count}
+                </span>
+              </label>
             ))}
-          </select>
+          </div>
           {errorMessage('maxPlayers')}
-        </div>
+        </fieldset>
 
         <fieldset
-          className="field"
+          className="field board-size"
           aria-describedby={errorProps('board')['aria-describedby']}
         >
-          <legend>Board size</legend>
-          {(['boardWidth', 'boardHeight'] as const).map((name) => (
-            <div key={name}>
-              <label htmlFor={name}>
-                {name === 'boardWidth' ? 'Board width' : 'Board height'}
-              </label>
-              <input
+          <legend>
+            Board size <GridIcon />
+          </legend>
+          <div className="steppers">
+            {(['boardWidth', 'boardHeight'] as const).map((name) => (
+              <Stepper
+                key={name}
                 id={name}
-                type="number"
+                label={name === 'boardWidth' ? 'Board width' : 'Board height'}
                 min={BOARD_MIN_SIZE}
                 max={BOARD_MAX_SIZE}
                 value={values[name]}
-                onChange={(event) => setValue(name, event.target.value)}
+                onChange={(value) => setValue(name, value)}
                 onBlur={() => errors.touch('board')}
-                aria-invalid={errorProps('board')['aria-invalid']}
+                invalid={errorProps('board')['aria-invalid']}
               />
-            </div>
-          ))}
+            ))}
+          </div>
           {errorMessage('board')}
         </fieldset>
 
         <div className="field">
           <label htmlFor="timer">Timer</label>
-          <select
-            id="timer"
-            value={values.timer}
-            onChange={(event) => setValue('timer', event.target.value)}
-            {...errorProps('timer')}
-          >
-            {Object.entries(TIMER_LABELS).map(([mode, label]) => (
-              <option key={mode} value={mode}>
-                {label}
-              </option>
-            ))}
-          </select>
+          <div className="pill select-pill">
+            <ClockIcon />
+            <select
+              id="timer"
+              value={values.timer}
+              onChange={(event) => setValue('timer', event.target.value)}
+              {...errorProps('timer')}
+            >
+              {Object.entries(TIMER_LABELS).map(([mode, label]) => (
+                <option key={mode} value={mode}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
           {errorMessage('timer')}
         </div>
 
         <ErrorMessage code={errors.formError} />
 
-        <button type="submit">Create</button>
+        <button type="submit" className="btn btn-large form-submit">
+          Create
+        </button>
       </form>
     </main>
   )

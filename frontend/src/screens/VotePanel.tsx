@@ -32,7 +32,7 @@ export function VotePanel({ vote, me, onVote }: VotePanelProps) {
   const secondsLeft = useSecondsLeft(vote)
 
   return (
-    <section aria-label="Vote to end the game" className="vote-panel">
+    <section aria-label="Vote to end the game" className="card vote-panel">
       <p className="vote-title">{voteTitle(vote, me)}</p>
       <p>{`${voteProgress(vote)}, ${secondsLeft} s left`}</p>
       {vote.proposer !== me &&
@@ -40,10 +40,14 @@ export function VotePanel({ vote, me, onVote }: VotePanelProps) {
           <p>You have voted.</p>
         ) : (
           <div className="actions">
-            <button type="button" onClick={() => onVote(true)}>
+            <button type="button" className="btn" onClick={() => onVote(true)}>
               End game
             </button>
-            <button type="button" onClick={() => onVote(false)}>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => onVote(false)}
+            >
               Keep playing
             </button>
           </div>

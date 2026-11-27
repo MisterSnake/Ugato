@@ -85,13 +85,13 @@ def test_max_players_defaults_to_two_when_omitted() -> None:
     assert validate_create_request(payload).max_players == 2
 
 
-@pytest.mark.parametrize("max_players", [2, 3, 4])
+@pytest.mark.parametrize("max_players", [2, 3, 4, 5])
 def test_allowed_max_players_is_accepted(max_players: int) -> None:
     game = validate_create_request(make_payload(maxPlayers=max_players))
     assert game.max_players == max_players
 
 
-@pytest.mark.parametrize("max_players", [1, 5, "2", 2.0, True, None])
+@pytest.mark.parametrize("max_players", [1, 6, "2", 2.0, True, None])
 def test_invalid_max_players_is_rejected(max_players: object) -> None:
     assert_rejected(
         make_payload(maxPlayers=max_players), "maxPlayers", "invalid_max_players"
@@ -144,8 +144,8 @@ def test_valid_request_returns_game_with_creator_as_only_player() -> None:
     [
         ({"username": "Al", "color": "pink"}, "username", "invalid_username"),
         ({"color": "pink", "gameName": "ab"}, "color", "invalid_color"),
-        ({"gameName": "ab", "maxPlayers": 5}, "gameName", "invalid_game_name"),
-        ({"maxPlayers": 5, "boardWidth": 31}, "maxPlayers", "invalid_max_players"),
+        ({"gameName": "ab", "maxPlayers": 6}, "gameName", "invalid_game_name"),
+        ({"maxPlayers": 6, "boardWidth": 31}, "maxPlayers", "invalid_max_players"),
     ],
 )
 def test_first_failing_field_in_form_order_is_reported(

@@ -3,6 +3,7 @@ import type { GameSummary, JoinGameRequest, ServerError } from '../game/types'
 import { validateJoinDraft } from '../game/validation'
 import { ColorField } from './ColorField'
 import { ErrorMessage } from './ErrorMessage'
+import { UserIcon } from './icons'
 import { useFieldErrors } from './useFieldErrors'
 
 interface JoinGameFormProps {
@@ -44,19 +45,22 @@ export function JoinGameForm({
   return (
     <main className="screen">
       <h1>{`Join ${game.name}`}</h1>
-      <form noValidate onSubmit={handleSubmit}>
+      <form className="card form-card" noValidate onSubmit={handleSubmit}>
         <div className="field">
           <label htmlFor="username">Your name</label>
-          <input
-            id="username"
-            value={username}
-            onChange={(event) => {
-              setUsername(event.target.value)
-              errors.edit('username')
-            }}
-            onBlur={() => errors.touch('username')}
-            {...errors.errorProps('username')}
-          />
+          <div className="pill">
+            <UserIcon />
+            <input
+              id="username"
+              value={username}
+              onChange={(event) => {
+                setUsername(event.target.value)
+                errors.edit('username')
+              }}
+              onBlur={() => errors.touch('username')}
+              {...errors.errorProps('username')}
+            />
+          </div>
           <ErrorMessage id="username-error" code={usernameError} />
         </div>
 
@@ -73,10 +77,12 @@ export function JoinGameForm({
         <ErrorMessage code={errors.formError} />
 
         <div className="actions">
-          <button type="button" onClick={onBack}>
+          <button type="button" className="btn-ghost" onClick={onBack}>
             Back
           </button>
-          <button type="submit">Join</button>
+          <button type="submit" className="btn">
+            Join
+          </button>
         </div>
       </form>
     </main>

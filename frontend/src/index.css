@@ -1,15 +1,22 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --accent: #aa3bff;
-  --error: #b3261e;
+  --bg: #131428;
+  /* Opaque, so a card's gradient border does not show through its inside. */
+  --surface: #1e2040;
+  --field: #181a34;
+  --text: #e4e5f5;
+  --text-h: #fff;
+  --muted: #a9acce;
+  --accent: #c264f0;
+  --accent-2: #5ee0ea;
+  --danger: #ff5a52;
+  --glow: rgb(112 110 255 / 35%);
+  --edge: linear-gradient(135deg, var(--accent-2), var(--accent));
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --sans: 'Poppins', system-ui, 'Segoe UI', Roboto, sans-serif;
+  --display: 'Lilita One', system-ui, 'Segoe UI', Roboto, sans-serif;
 
   font: 18px/145% var(--sans);
-  color-scheme: light dark;
+  color-scheme: dark;
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
@@ -22,24 +29,111 @@
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --accent: #c084fc;
-    --error: #f2b8b5;
-  }
-}
-
 body {
   margin: 0;
 }
 
-h1 {
-  font-weight: 500;
+h1,
+h2 {
+  font-family: var(--display);
+  font-weight: 400;
+  line-height: 1.15;
   color: var(--text-h);
+}
+
+h1 {
+  font-size: 2.4rem;
+  overflow-wrap: anywhere;
+  text-shadow:
+    0 0 12px rgb(120 130 255 / 90%),
+    0 0 28px var(--glow);
+}
+
+h2 {
+  font-size: 1.5rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent-2);
+  outline-offset: 3px;
+}
+
+/* A glass card with a gradient border: the surface covers the padding box and
+   the gradient shows only through the transparent border. */
+.card {
+  border: 2px solid transparent;
+  border-radius: 1.5rem;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    var(--edge) border-box;
+  box-shadow:
+    0 0 24px var(--glow),
+    inset 0 0 32px rgb(130 140 255 / 10%);
+}
+
+input,
+select,
+button {
+  font: inherit;
+}
+
+/* Every button looks like .btn unless it has another variant. */
+button,
+.btn {
+  padding: 0.45rem 1.4rem;
+  border: 2px solid transparent;
+  border-radius: 0.8rem;
+  background:
+    linear-gradient(#9a17cf, #6417b8) padding-box,
+    linear-gradient(110deg, #5b6cff, #c9e6ff 50%, #d64be8) border-box;
+  box-shadow:
+    0 3px 0 #43138a,
+    0 0 16px rgb(178 50 235 / 55%);
+  font-family: var(--display);
+  letter-spacing: 0.02em;
+  color: #fff;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    filter: brightness(1.12);
+  }
+}
+
+.btn-danger {
+  background:
+    linear-gradient(#7a1c4a, #54174f) padding-box,
+    linear-gradient(110deg, #7a46c8, #e8d4e8 50%, var(--danger)) border-box;
+  box-shadow:
+    0 3px 0 #3d1450,
+    0 0 16px rgb(255 70 70 / 55%);
+}
+
+.btn-ghost {
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    var(--edge) border-box;
+  box-shadow: 0 0 10px var(--glow);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Pill fields. */
+input:not([type='radio']),
+select {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 0.5rem 1rem;
+  border: 1px solid #6f74b8;
+  border-radius: 999px;
+  background-color: var(--field);
+  color: var(--text-h);
+
+  &[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
 }
 
 .screen {
@@ -59,40 +153,508 @@ h1 {
   }
 }
 
-fieldset.field {
-  border: 1px solid var(--border);
-  border-radius: 6px;
+/* Forms */
+.form-card {
+  padding: 1.5rem 1.25rem 1rem;
+
+  .field > label,
+  .field > legend {
+    margin-bottom: 0.35rem;
+    padding: 0;
+    font-weight: 600;
+    color: var(--text-h);
+    text-transform: uppercase;
+  }
+
+  .board-size > legend {
+    padding: 0 0.5rem;
+  }
+
+  /* It sits across the bottom edge of the card. Errors stay above it, as they
+     come before it in the flow. */
+  .form-submit {
+    display: block;
+    min-width: 12rem;
+    margin: 1.25rem auto -2.6rem;
+  }
+
+  .actions {
+    margin-top: 1.25rem;
+    padding-bottom: 0.25rem;
+  }
 }
 
-.colors label {
-  display: inline-block;
-  margin-right: 0.75rem;
+/* Room for the button that hangs below the card. */
+.form-card:has(.form-submit) {
+  margin-bottom: 3rem;
 }
 
-input,
-select,
-button {
-  font: inherit;
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 1rem;
+  border: 1px solid #6f74b8;
+  border-radius: 999px;
+  background: var(--field);
+
+  .icon {
+    color: var(--muted);
+  }
+
+  input,
+  select {
+    flex: 1;
+    min-width: 0;
+    padding: 0.55rem 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    outline: none;
+  }
+
+  &:has([aria-invalid='true']) {
+    border-color: var(--danger);
+  }
+
+  /* The ring goes around the whole pill. */
+  &:has(:focus-visible) {
+    outline: 3px solid var(--accent-2);
+    outline-offset: 3px;
+  }
 }
 
-button {
-  padding: 0.4rem 1rem;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-h);
+.select-pill {
+  position: relative;
+  display: inline-flex;
+
+  select {
+    appearance: none;
+    padding-right: 1.5rem;
+    cursor: pointer;
+  }
+
+  option {
+    background: var(--field);
+  }
+
+  /* Browsers with customizable selects also let the open list take the theme.
+     The others keep their native list, dark through color-scheme. */
+  @supports (appearance: base-select) {
+    anchor-name: --select-pill;
+
+    select,
+    select::picker(select) {
+      appearance: base-select;
+    }
+
+    select {
+      /* As wide as the longest label, so choosing does not resize the pill. */
+      min-width: 9em;
+      min-height: 0;
+      line-height: inherit;
+    }
+
+    /* The pill already draws an arrow. */
+    select::picker-icon {
+      display: none;
+    }
+
+    /* A card that opens under the whole pill, or above it if there is no room. */
+    select::picker(select) {
+      position-anchor: --select-pill;
+      /* Below first, not on whichever side happens to have more room. */
+      position-try-order: normal;
+      min-width: anchor-size(width);
+      margin-block: 0.5rem;
+      padding: 0.35rem;
+      border: 2px solid transparent;
+      border-radius: 1rem;
+      background:
+        linear-gradient(var(--surface), var(--surface)) padding-box,
+        var(--edge) border-box;
+      box-shadow:
+        0 8px 24px rgb(0 0 0 / 45%),
+        0 0 18px var(--glow);
+    }
+
+    option {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      min-height: 0;
+      padding: 0.5rem 0.9rem;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--text-h);
+      outline: none;
+      cursor: pointer;
+    }
+
+    option:hover,
+    option:focus-visible {
+      background: rgb(130 140 255 / 22%);
+    }
+
+    option:checked {
+      font-weight: 600;
+    }
+
+    option:focus-visible {
+      box-shadow: inset 0 0 0 2px var(--accent-2);
+    }
+
+    option::checkmark {
+      order: 1;
+      color: var(--accent-2);
+    }
+  }
+
+  /* The arrow that replaces the native one. Clicks go through to the select. */
+  &::after {
+    content: '';
+    position: absolute;
+    top: calc(50% - 0.35rem);
+    right: 1.1rem;
+    width: 0.4rem;
+    height: 0.4rem;
+    border: solid var(--muted);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+    pointer-events: none;
+  }
+}
+
+fieldset.field.board-size {
+  min-width: 0;
+  padding: 0.5rem 0.75rem 0.75rem;
+  border: 1px solid #6f74b8;
+  border-radius: 0.9rem;
+}
+
+.steppers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+}
+
+.stepper-field {
+  flex: 1 1 8rem;
+}
+
+.stepper {
+  display: flex;
+  overflow: hidden;
+  margin-top: 0.25rem;
+  border: 1px solid #6f74b8;
+  border-radius: 0.8rem;
+  background: var(--field);
+
+  &:has([aria-invalid='true']) {
+    border-color: var(--danger);
+  }
+
+  input {
+    flex: 1;
+    width: 100%;
+    min-width: 0;
+    padding: 0.5rem 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    appearance: textfield;
+    text-align: center;
+  }
+
+  /* The step buttons replace the native spinner. */
+  input::-webkit-inner-spin-button,
+  input::-webkit-outer-spin-button {
+    appearance: none;
+  }
+
+  button {
+    flex: none;
+    width: 2.6rem;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: rgb(130 140 255 / 16%);
+    box-shadow: none;
+  }
+
+  button::before {
+    content: '';
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border: solid var(--accent-2);
+    border-width: 2px 0 0 2px;
+  }
+
+  .stepper-down::before {
+    transform: translateY(-0.15rem) rotate(225deg);
+  }
+
+  .stepper-up::before {
+    border-color: var(--accent);
+    transform: translateY(0.15rem) rotate(45deg);
+  }
+
+  /* Inside the box, where overflow does not clip the ring. */
+  :focus-visible {
+    outline: 3px solid var(--accent-2);
+    outline-offset: -3px;
+  }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The legend is the group's heading, so the group needs no box. */
+fieldset.field.colors {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.color-options {
+  display: flex;
+}
+
+.color-option {
+  position: relative;
+  flex: 1;
+  padding: 0.6rem 0 0.35rem;
+  text-align: center;
   cursor: pointer;
+
+  /* Out of sight but still focusable. */
+  input {
+    position: absolute;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .color-dot {
+    position: relative;
+    display: inline-block;
+    width: 2.1rem;
+    height: 2.1rem;
+    vertical-align: middle;
+    border: 2px solid color-mix(in srgb, var(--player), white 30%);
+    border-radius: 50%;
+    background: var(--player);
+    box-shadow: 0 3px 8px rgb(0 0 0 / 45%);
+  }
+
+  input:checked + .color-dot {
+    box-shadow:
+      0 0 0 3px var(--surface),
+      0 0 0 6px var(--accent-2),
+      0 0 16px 6px rgb(94 224 234 / 55%);
+  }
+
+  input:focus-visible + .color-dot {
+    outline: 3px solid #fff;
+    outline-offset: 7px;
+  }
+
+  &:has(input:disabled) {
+    cursor: default;
+  }
+
+  input:disabled + .color-dot {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--player) 30%, var(--surface));
+    box-shadow: none;
+  }
+
+  /* A taken color is crossed out. */
+  input:disabled + .color-dot::before,
+  input:disabled + .color-dot::after {
+    content: '';
+    position: absolute;
+    top: calc(50% - 1px);
+    left: 10%;
+    width: 80%;
+    height: 2px;
+    background: var(--muted);
+    transform: rotate(45deg);
+  }
+
+  input:disabled + .color-dot::after {
+    transform: rotate(-45deg);
+  }
 }
 
-h2 {
-  font-size: 1.1rem;
-  font-weight: 500;
-  color: var(--text-h);
+.icon {
+  flex: none;
+  vertical-align: -0.125em;
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
+.logo {
+  margin: 1rem 0 1.25rem;
+  font-size: 4.5rem;
+}
+
+.btn-large {
+  padding: 0.7rem 2.25rem;
+  font-size: 1.5rem;
+  text-transform: uppercase;
+}
+
+.section-title {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 2rem 0 1rem;
+  font-family: var(--sans);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* Segment buttons: radios that look like one bar. */
+fieldset.field.segments {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.segment-bar {
+  display: flex;
+  padding: 3px;
+  border: 1px solid #6f74b8;
+  border-radius: 999px;
+  background: var(--field);
+}
+
+.segment {
+  position: relative;
+  flex: 1;
+  text-align: center;
+  cursor: pointer;
+
+  input {
+    position: absolute;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  span {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    color: var(--text-h);
+  }
+
+  input:checked + span {
+    background:
+      linear-gradient(var(--surface), var(--surface)) padding-box,
+      var(--edge) border-box;
+    box-shadow: 0 0 12px rgb(94 224 234 / 45%);
+  }
+
+  input:focus-visible + span {
+    outline: 3px solid #fff;
+    outline-offset: 2px;
+  }
+}
+
+.u-spinner {
+  position: relative;
+  width: 7rem;
+  height: 7rem;
+  margin: 0 auto 1.5rem;
+  animation: spin 4s linear infinite;
+
+  span {
+    --color: color-mix(in srgb, var(--accent) var(--mix), var(--accent-2));
+
+    position: absolute;
+    top: calc(50% - 0.5rem);
+    left: calc(50% - 0.5rem);
+    width: 1rem;
+    font-family: var(--display);
+    font-size: 1rem;
+    line-height: 1rem;
+    color: var(--color);
+    text-shadow: 0 0 8px var(--color);
+    transform: rotate(var(--angle)) translateY(-2.9rem);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .u-spinner {
+    animation: none;
+  }
+}
+
+/* The summary of the game being waited for: icon, label and value per row. */
+.summary {
+  margin: 0 0 1.75rem;
+  padding: 1.25rem 1.5rem;
+  text-align: left;
+}
+
+.summary-row {
+  display: grid;
+  grid-template-columns: 1.5rem auto 1fr;
+  align-items: center;
+  column-gap: 0.75rem;
+  padding: 0.5rem 0;
+
+  > .icon {
+    font-size: 1.4rem;
+    color: var(--muted);
+  }
+
+  dt {
+    font-size: 1rem;
+  }
+
+  dd {
+    margin: 0;
+    font-family: var(--display);
+    font-size: 1.3rem;
+    overflow-wrap: anywhere;
+  }
+
+  .summary-name {
+    grid-column: 2 / -1;
+    font-size: 1.8rem;
+    line-height: 1.2;
+    color: var(--accent-2);
+  }
+
+  .summary-wide {
+    grid-column: 2 / -1;
+    font-family: var(--sans);
+    font-size: 1rem;
+  }
+
+  .swatch {
+    margin: 0 0 0 0.5em;
+  }
 }
 
 .games {
@@ -102,13 +664,28 @@ button:disabled {
   text-align: left;
 
   li {
-    margin-bottom: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    margin-bottom: 1.25rem;
+    padding: 1rem 1.5rem 1.25rem;
+  }
+
+  li.playing {
+    background:
+      linear-gradient(#2d1b35, #2d1b35) padding-box,
+      linear-gradient(135deg, #5a4a72, #9c4a58) border-box;
+    box-shadow:
+      0 0 22px rgb(255 70 80 / 28%),
+      inset 0 0 32px rgb(255 80 90 / 10%);
+  }
+
+  .game-name {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1.25rem;
   }
 
   strong {
+    min-width: 0;
     color: var(--text-h);
     overflow-wrap: anywhere;
   }
@@ -117,8 +694,9 @@ button:disabled {
     display: grid;
     grid-template-columns: auto 1fr;
     align-items: baseline;
-    column-gap: 0.75rem;
-    margin: 0.25rem 0 0;
+    column-gap: 1.25rem;
+    row-gap: 0.15rem;
+    margin: 0.5rem 0 0;
   }
 
   dd {
@@ -126,20 +704,45 @@ button:disabled {
     overflow-wrap: anywhere;
   }
 
-  button,
+  dd.full {
+    color: var(--danger);
+  }
+
+  .swatch {
+    margin: 0 0 0 0.5em;
+    border-radius: 50%;
+  }
+
+  button {
+    margin-top: 0.9rem;
+    font-size: 1.15rem;
+    text-transform: uppercase;
+  }
+
   .in-progress {
-    margin: 0.5rem 0 0;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.75rem 0 0;
+    font-weight: 600;
+    color: var(--text-h);
+    text-transform: uppercase;
+
+    .icon {
+      color: #ff7a4d;
+    }
   }
 }
 
 .error,
 .notice {
   margin: 0.25rem 0;
-  color: var(--error);
+  color: var(--danger);
 }
 
 dt {
-  font-size: 0.8em;
+  font-size: 0.85em;
+  color: var(--muted);
 }
 
 dd {
@@ -160,38 +763,58 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.final-scores {
+  margin: 1.5rem 0;
+  padding: 1rem 1.5rem;
+  text-align: left;
+
+  li {
+    padding: 0.35rem 0;
+    font-size: 1.15rem;
+    color: var(--text-h);
+  }
+
+  .swatch {
+    margin-right: 0.7em;
+  }
+}
+
 /* Player colors. Whatever has one of these classes can use var(--player). */
 .color-red {
-  --player: #d32f2f;
+  --player: #f5303c;
 }
 
 .color-blue {
-  --player: #1976d2;
+  --player: #1e9bff;
 }
 
 .color-yellow {
-  --player: #fbc02d;
+  --player: #ffd51f;
+  /* Darker than the others, or the tile fades into the beige ones. */
+  --tile-edge: #8f6a00;
 }
 
 .color-green {
-  --player: #388e3c;
+  --player: #27c25c;
 }
 
 .color-orange {
-  --player: #f57c00;
+  --player: #ff8a00;
 }
 
 .color-purple {
-  --player: #7b1fa2;
+  --player: #a62fe0;
 }
 
 .swatch {
   display: inline-block;
-  width: 0.8em;
-  height: 0.8em;
+  width: 0.85em;
+  height: 0.85em;
   margin-right: 0.4em;
-  border: 1px solid #1a1a1a;
+  border: 1px solid rgb(255 255 255 / 45%);
+  border-radius: 0.2em;
   background: var(--player);
+  box-shadow: 0 0 8px var(--player);
 }
 
 /* The game fills the screen, and only the board area grows. */
@@ -212,34 +835,82 @@ dd {
   justify-content: center;
   align-items: center;
   align-content: center;
-  gap: 0.25rem 1rem;
+  gap: 0.75rem 1rem;
   box-sizing: border-box;
   align-self: stretch;
+  /* Keeps the buttons clear of the board's glowing frame. */
+  margin-bottom: 0.5rem;
   /* Room for the buttons, so showing them does not resize the board. */
-  min-height: 6.5rem;
-  border-bottom: 4px solid var(--player);
+  min-height: 7.5rem;
 
   p {
     margin: 0;
   }
 
   .turn-text {
+    font-family: var(--display);
+    /* Of its own size: the inherited one is too short for a title this big. */
+    line-height: 1.15;
     color: var(--text-h);
-    font-size: 1.2rem;
+    font-size: 1.4rem;
   }
 
-  &.mine {
-    background: color-mix(in srgb, var(--player) 20%, transparent);
+  &.mine .turn-text {
+    font-size: 2.2rem;
+    text-shadow:
+      0 0 8px var(--player),
+      0 0 20px var(--player);
+  }
+}
 
-    .turn-text {
-      font-size: 1.6rem;
-      font-weight: 700;
-    }
+/* "Mark" pulses to show it is the next step. Only transform and opacity move,
+   which are cheap to redraw. */
+.turn-bar .mark {
+  position: relative;
+  animation: mark-grow 1.2s ease-in-out infinite;
+
+  /* The ring starts on the button's edge, then expands and fades. */
+  &::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border: 3px solid var(--accent-2);
+    border-radius: inherit;
+    pointer-events: none;
+    animation: mark-ring 1.2s ease-out infinite;
+  }
+}
+
+@keyframes mark-grow {
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes mark-ring {
+  from {
+    opacity: 0.9;
+  }
+
+  to {
+    opacity: 0;
+    transform: scale(1.18, 1.4);
+  }
+}
+
+/* Nothing moves, and a still ring keeps the button standing out. */
+@media (prefers-reduced-motion: reduce) {
+  .turn-bar .mark,
+  .turn-bar .mark::after {
+    animation: none;
   }
 }
 
 .vote-panel {
+  box-sizing: border-box;
   align-self: stretch;
+  padding: 0.5rem 1rem;
+  border-radius: 1rem;
   text-align: center;
   overflow-wrap: anywhere;
 
@@ -248,8 +919,9 @@ dd {
   }
 
   .vote-title {
+    font-family: var(--display);
+    font-size: 1.3rem;
     color: var(--text-h);
-    font-weight: 700;
   }
 
   .actions {
@@ -257,8 +929,18 @@ dd {
   }
 }
 
+/* A glass strip across the screen. */
 .game-notice {
+  box-sizing: border-box;
+  align-self: stretch;
   margin: 0;
+  padding: 0.3rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 0.8rem;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    var(--edge) border-box;
+  box-shadow: 0 0 12px var(--glow);
   color: var(--text-h);
   text-align: center;
 }
@@ -272,14 +954,17 @@ dd {
   min-height: 0;
   overflow: hidden;
   border: 4px solid transparent;
+  border-radius: 1rem;
   /* The browser must not pan or zoom the page: the board does. */
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 
+  /* The area does not scale, so its glow costs nothing while zooming. */
   &.my-turn {
     border-color: var(--player);
+    box-shadow: 0 0 16px var(--player);
   }
 }
 
@@ -292,54 +977,82 @@ dd {
   transform-origin: 0 0;
 }
 
+/* A rounded tile drawn inside the cell's box. The gap between tiles is the
+   transparent border, so cells stay exactly 32px apart. Shadows are inset only:
+   up to 900 cells are redrawn on every zoom and pan. */
 .cell {
   position: relative;
   box-sizing: border-box;
-  /* --hairline is one screen pixel, set by the board according to the zoom. */
-  border: calc(var(--hairline) / 2) solid #8f8b80;
+  border: 1.5px solid transparent;
+  border-radius: 7px;
   background-color: var(--empty-cell);
+  background-clip: padding-box;
+  /* A raised look: light from above. */
+  box-shadow:
+    inset 0 1px 2px 1px rgb(255 255 255 / 65%),
+    inset 0 -2px 3px rgb(80 70 50 / 28%);
 
+  /* --hairline is one screen pixel, set by the board according to the zoom.
+     Outside in: the dark border every colored cell has, a light edge and the
+     glow. */
   &.taken,
   &.disabled,
   &.left,
   &.left-disabled {
-    border: var(--hairline) solid #1a1a1a;
     background-color: var(--player);
+    box-shadow:
+      inset 0 0 0 var(--hairline) #1a1a1a,
+      inset 0 0 0 calc(var(--hairline) + 1.5px)
+        var(--tile-edge, color-mix(in srgb, var(--player), white 45%)),
+      inset 0 0 7px 2px rgb(255 255 255 / 28%);
   }
 
   &.disabled,
   &.left-disabled {
     background-image: repeating-linear-gradient(
       45deg,
-      rgb(0 0 0 / 55%) 0 4px,
+      color-mix(in srgb, var(--player), black 55%) 0 4px,
       transparent 4px 9px
     );
   }
 
+  /* Faded by draining color: opacity alone would let the page show through and
+     look like a hole. */
   &.left,
   &.left-disabled {
-    opacity: 0.35;
+    filter: grayscale(0.7) saturate(0.6);
+    opacity: 0.75;
   }
 
   &.last-move::after {
     content: '';
     position: absolute;
-    inset: 34%;
+    inset: 32%;
     border: var(--hairline) solid #1a1a1a;
     border-radius: 50%;
     background: #fff;
   }
 
-  /* A double ring shows on every player color. */
+  /* A white ring with a glow shows on every player color and on beige. Only a
+     few cells have it, so its outer glow is cheap. */
   &.selected,
   &.candidate {
+    z-index: 1;
     box-shadow:
-      inset 0 0 0 calc(2 * var(--hairline)) #111,
-      inset 0 0 0 calc(5 * var(--hairline)) #fff;
+      0 0 0 calc(2 * var(--hairline)) #fff,
+      0 0 calc(10 * var(--hairline)) calc(3 * var(--hairline)) #fff,
+      inset 0 0 0 calc(3 * var(--hairline)) #fff,
+      inset 0 0 calc(8 * var(--hairline)) calc(4 * var(--hairline))
+        rgb(255 255 255 / 85%);
   }
 
   &.dimmed {
     filter: brightness(0.55);
+  }
+
+  &.left.dimmed,
+  &.left-disabled.dimmed {
+    filter: grayscale(0.7) saturate(0.6) brightness(0.55);
   }
 }
 
@@ -357,13 +1070,111 @@ dd {
 
 .clock {
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
 }
 
+.turn-text .clock {
+  color: var(--text-h);
+}
+
+.scores .clock {
+  color: var(--muted);
+
+  &.running {
+    font-weight: 600;
+    color: var(--text-h);
+  }
+}
+
+/* Names and scores are light, and the clocks stand out in bold. */
 .scores {
   margin: 0;
   padding: 0;
   list-style: none;
-  color: var(--text-h);
+  color: var(--text);
   overflow-wrap: anywhere;
+}
+
+/* A phone on its side has width to spare but little height. Stacked around the
+   board, the controls would leave it a thin strip, so they move to a column
+   beside it and the board takes the full height. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .game {
+    --side: 15rem;
+
+    position: relative;
+    gap: 0.4rem;
+    /* Everything but the board flows in what the padding leaves: the column. */
+    padding-left: calc(100% - var(--side));
+    /* Only the column scrolls, when a vote and notices do not fit. */
+    overflow-y: auto;
+
+    > * {
+      flex: none;
+    }
+
+    button {
+      padding: 0.2rem 0.8rem;
+    }
+
+    /* Fixed, so scrolling the column leaves the board where it is. */
+    .board-area {
+      position: fixed;
+      top: 0.5rem;
+      bottom: 0.5rem;
+      left: 0.5rem;
+      right: calc(var(--side) + 0.5rem);
+    }
+  }
+
+  .turn-bar {
+    gap: 0.4rem 0.5rem;
+    margin-bottom: 0;
+    /* The column's height no longer resizes the board. */
+    min-height: 0;
+
+    .turn-text {
+      width: 100%;
+      font-size: 1.1rem;
+      text-align: center;
+    }
+
+    &.mine .turn-text {
+      font-size: 1.6rem;
+    }
+
+    .actions {
+      gap: 0.4rem;
+    }
+
+    .actions button {
+      padding-inline: 0.5rem;
+    }
+  }
+
+  .vote-panel {
+    padding: 0.25rem 0.5rem;
+
+    .vote-title {
+      font-size: 1rem;
+    }
+
+    .actions {
+      margin-top: 0.25rem;
+      gap: 0.5rem;
+    }
+
+    .actions button {
+      padding-inline: 0.5rem;
+      white-space: nowrap;
+    }
+  }
+
+  .zoom,
+  .scores {
+    gap: 0.2rem 0.6rem;
+  }
+
+  .scores {
+    font-size: 0.85rem;
+  }
 }
