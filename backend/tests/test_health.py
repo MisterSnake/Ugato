@@ -31,5 +31,4 @@ def test_health_reports_the_configured_version() -> None:
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    # TEMPORARY: broken on purpose to verify that CI fails (task 4.1). Do not merge.
-    assert response.json() == {"status": "ok", "version": "broken-on-purpose"}
+    assert response.json() == {"status": "ok", "version": "abc123"}
