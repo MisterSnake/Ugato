@@ -20,11 +20,33 @@ game names would no longer be unique. A restart removes every game.
 ./.venv/Scripts/python.exe -m pytest -q
 ```
 
+## Configuration
+
+Both variables are read from the environment.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `APP_VERSION` | `dev` | The version `GET /api/health` reports. A deployed backend carries the full git commit SHA it was built from. |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` | Comma-separated origins (scheme, host and optional port, with no trailing slash) that may use the backend, both through CORS and through the WebSocket. Spaces and empty entries are ignored. Setting it replaces the default. |
+
 ## HTTP
 
-`GET /api/health` returns `{"status": "ok"}`.
+`GET /api/health` returns `{"status": "ok", "version": "dev"}`, with the value of
+`APP_VERSION` as `version`.
+
+Cross-origin requests are allowed only from the allowed origins: the response to
+any other origin has no `Access-Control-Allow-Origin` header.
 
 ## WebSocket protocol: `/api/ws`
+
+A handshake with an `Origin` header that is not an allowed origin is rejected
+(HTTP 403, close code 1008) before the connection is accepted. A handshake
+without `Origin` is accepted: browsers always send it, so this only concerns
+other clients.
+
+In development the page connects through the Vite proxy, and the browser sends
+`Origin: http://localhost:5173`. A page opened under another address, such as
+`http://127.0.0.1:5173`, needs that origin in `ALLOWED_ORIGINS`.
 
 Messages are JSON objects sent as text frames. A connection can be in at most
 one game at a time, either as its host (the creator) or as a joined player.
@@ -162,7 +184,7 @@ Field rules:
 - `username` and `gameName`: trimmed, then 3-20 printable characters. Game names
   are unique ignoring case.
 - `color`: `red`, `blue`, `yellow`, `green`, `orange` or `purple`.
-- `maxPlayers`: integer from 2 to 4.
+- `maxPlayers`: integer from 2 to 5.
 - `boardWidth` and `boardHeight`: integers from 8 to 30, width >= height.
 - `timer`: `none`, `slow`, `normal` or `fast`. It cannot be changed later. See
   [Turn timer](#turn-timer).
@@ -241,7 +263,7 @@ request. `already_in_game` is always checked first.
 | `invalid_username` | `username` | Username fails the name rules |
 | `invalid_color` | `color` | Color is not one of the six allowed values |
 | `invalid_game_name` | `gameName` | Game name fails the name rules |
-| `invalid_max_players` | `maxPlayers` | Max players is outside 2-4 |
+| `invalid_max_players` | `maxPlayers` | Max players is outside 2-5 |
 | `invalid_board` | `board` | Board size is out of range or height > width |
 | `invalid_timer` | `timer` | Timer is not one of the four modes |
 | `name_taken` | `gameName` | Another game already uses this name |

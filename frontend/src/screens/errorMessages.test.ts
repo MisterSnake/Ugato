@@ -30,3 +30,11 @@ describe('ERROR_MESSAGES during a vote', () => {
     expect(ERROR_MESSAGES[code]).toBe(message)
   })
 })
+
+describe('ERROR_MESSAGES for the player limit', () => {
+  it('names the allowed range', () => {
+    expect(ERROR_MESSAGES.invalid_max_players).toBe(
+      'Max players must be between 2 and 5.',
+    )
+  })
+})

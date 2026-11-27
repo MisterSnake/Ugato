@@ -56,6 +56,12 @@ describe('WaitingScreen', () => {
     }
   })
 
+  it('shows a spinner while it waits', () => {
+    renderWaiting()
+
+    expect(screen.getByTestId('u-spinner')).toBeInTheDocument()
+  })
+
   it.each([
     ['host', 'normal', 'Normal 30-10'],
     ['player', 'slow', 'Slow 60-15'],
@@ -70,6 +76,28 @@ describe('WaitingScreen', () => {
     renderWaiting()
 
     expect(listedPlayers()).toEqual(['Esteban (host) Red', 'Ana Blue'])
+  })
+
+  it('gives each player a swatch in their color', () => {
+    renderWaiting()
+
+    const [esteban, ana] = within(
+      screen.getByRole('list', { name: 'Players' }),
+    ).getAllByRole('listitem')
+
+    expect(esteban.querySelector('.swatch')).toHaveClass('color-red')
+    expect(ana.querySelector('.swatch')).toHaveClass('color-blue')
+  })
+
+  it.each([
+    ['host', 'Cancel game'],
+    ['player', 'Leave game'],
+  ] as const)('styles the %s "%s" button as dangerous', (role, label) => {
+    renderWaiting({ role })
+
+    expect(screen.getByRole('button', { name: label })).toHaveClass(
+      'btn-danger',
+    )
   })
 
   it.each([

@@ -119,6 +119,26 @@ describe('GameScreen layout', () => {
 
     expect(onLeave).toHaveBeenCalledOnce()
   })
+
+  it('sets the running clock apart from the others', () => {
+    renderGame({
+      timer: 'fast',
+      clocks: { Ana: 20_000, Esteban: 30_000 },
+    })
+    const clock = (time: string) => screen.getByText(time)
+
+    expect(clock('0:20')).toHaveClass('clock', 'running')
+    expect(clock('0:30')).not.toHaveClass('running')
+  })
+
+  it('styles leaving as dangerous and the secondary buttons as ghosts', () => {
+    renderGame(myTurn)
+
+    expect(button('Leave game')).toHaveClass('btn-danger')
+    for (const name of ['Propose ending (2 left)', '-', 'Fit', '+']) {
+      expect(button(name)).toHaveClass('btn-ghost')
+    }
+  })
 })
 
 describe('GameScreen turn bar', () => {
@@ -129,7 +149,7 @@ describe('GameScreen turn bar', () => {
     expect(turnBar()).toHaveTextContent('Ana (Blue)')
     expect(turnBar()).toHaveClass('color-blue')
     expect(boardArea()).not.toHaveClass('my-turn')
-    expect(document.title).toBe('Ugato')
+    expect(document.title).toBe('U Cat')
   })
 
   it("makes the user's own turn unmistakable", () => {
@@ -138,7 +158,7 @@ describe('GameScreen turn bar', () => {
     expect(turnBar()).toHaveTextContent('Your turn!')
     expect(turnBar()).toHaveTextContent('Esteban (Red)')
     expect(boardArea()).toHaveClass('my-turn', 'color-red')
-    expect(document.title).toBe('Your turn! - Ugato')
+    expect(document.title).toBe('Your turn! - U Cat')
   })
 
   it('drops the turn from the title once it passes or the screen closes', () => {
@@ -146,7 +166,7 @@ describe('GameScreen turn bar', () => {
     const { update, unmount } = renderGame(myTurn)
 
     update({ currentPlayer: 'Ana' })
-    expect(document.title).toBe('Ugato')
+    expect(document.title).toBe('U Cat')
 
     unmount()
     expect(document.title).toBe('Before')
@@ -500,6 +520,54 @@ describe('GameScreen proposing to end', () => {
     )
 
     expect(onPropose).toHaveBeenCalledOnce()
+  })
+
+  const queryPropose = () =>
+    screen.queryByRole('button', { name: /^Propose ending/ })
+
+  it('is hidden while a touch selection waits for "Mark"', () => {
+    renderGame(myTurn)
+
+    press(2, 3, 'touch')
+
+    expect(button('Mark')).toBeInTheDocument()
+    expect(queryPropose()).not.toBeInTheDocument()
+  })
+
+  it('is back after tapping the selected cell again', () => {
+    renderGame(myTurn)
+    press(2, 3, 'touch')
+
+    press(2, 3, 'touch')
+
+    expect(queryPropose()).toBeInTheDocument()
+  })
+
+  it('is back after pressing "Mark"', async () => {
+    const { user } = renderGame(myTurn)
+    press(2, 3, 'touch')
+
+    await user.click(button('Mark'))
+
+    expect(queryPropose()).toBeInTheDocument()
+  })
+
+  it('is back when the selection can no longer be marked', () => {
+    const { update } = renderGame(myTurn)
+    press(2, 3, 'touch')
+
+    update({ currentPlayer: 'Ana' })
+
+    expect(queryButton('Mark')).not.toBeInTheDocument()
+    expect(queryPropose()).toBeInTheDocument()
+  })
+
+  it('is never hidden by a mouse click', () => {
+    renderGame(myTurn)
+
+    press(2, 3)
+
+    expect(queryPropose()).toBeInTheDocument()
   })
 
   it.each<[string, Partial<GameState>, number]>([

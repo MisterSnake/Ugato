@@ -70,11 +70,11 @@ describe('validateDraft', () => {
     ])
   })
 
-  it.each([2, 3, 4])('accepts %i max players', (maxPlayers) => {
+  it.each([2, 3, 4, 5])('accepts %i max players', (maxPlayers) => {
     expect(validate({ maxPlayers })).toHaveProperty('request')
   })
 
-  it.each([1, 5, 2.5, Number.NaN])('rejects %d max players', (maxPlayers) => {
+  it.each([1, 6, 2.5, Number.NaN])('rejects %d max players', (maxPlayers) => {
     expect(validate({ maxPlayers })).toEqual({
       errors: { maxPlayers: 'invalid_max_players' },
     })

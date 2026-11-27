@@ -10,7 +10,12 @@ interface PlayerClockProps {
 }
 
 export function PlayerClock({ state, player, msLeft }: PlayerClockProps) {
-  const shown = useCountdown(state, msLeft, isClockRunning(state, player))
+  const running = isClockRunning(state, player)
+  const shown = useCountdown(state, msLeft, running)
 
-  return <span className="clock">{formatClock(shown)}</span>
+  return (
+    <span className={running ? 'clock running' : 'clock'}>
+      {formatClock(shown)}
+    </span>
+  )
 }

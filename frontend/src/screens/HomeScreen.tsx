@@ -1,6 +1,7 @@
 import type { GameSummary, LobbyState } from '../game/types'
 import { TIMER_LABELS } from '../game/validation'
 import { colorLabel } from './colorLabel'
+import { GamepadIcon, GridIcon, LockIcon } from './icons'
 
 interface HomeScreenProps {
   lobby: LobbyState
@@ -19,7 +20,7 @@ export function HomeScreen({
 }: HomeScreenProps) {
   return (
     <main className="screen">
-      <h1>Ugato</h1>
+      <h1 className="logo">U Cat</h1>
       {notice && (
         <p role="alert" className="notice">
           {notice}
@@ -27,12 +28,16 @@ export function HomeScreen({
       )}
       <button
         type="button"
+        className="btn btn-large"
         onClick={onCreateGame}
         disabled={lobby.status !== 'ready'}
       >
         Create game
       </button>
-      <h2>Open games</h2>
+      <h2 className="section-title">
+        Open games
+        <GridIcon />
+      </h2>
       <OpenGames lobby={lobby} onJoin={onJoin} onRetry={onRetry} />
     </main>
   )
@@ -76,22 +81,35 @@ function GameRow({
   onJoin: HomeScreenProps['onJoin']
 }) {
   const [host] = game.players
+  const playing = game.status === 'playing'
+  const full = game.players.length >= game.maxPlayers
 
   return (
-    <li>
-      <strong>{game.name}</strong>
+    <li className={playing ? 'card playing' : 'card'}>
+      <div className="game-name">
+        {playing ? <LockIcon /> : <GamepadIcon />}
+        <strong>{game.name}</strong>
+      </div>
       <dl>
         <dt>Host</dt>
-        <dd>{`${host.name} (${colorLabel(host.color)})`}</dd>
+        <dd>
+          {`${host.name} (${colorLabel(host.color)})`}
+          <span aria-hidden="true" className={`swatch color-${host.color}`} />
+        </dd>
         <dt>Players</dt>
-        <dd>{`${game.players.length} / ${game.maxPlayers}`}</dd>
+        <dd
+          className={full ? 'full' : undefined}
+        >{`${game.players.length} / ${game.maxPlayers}`}</dd>
         <dt>Board</dt>
         <dd>{`${game.boardWidth} x ${game.boardHeight}`}</dd>
         <dt>Timer</dt>
         <dd>{TIMER_LABELS[game.timer]}</dd>
       </dl>
-      {game.status === 'playing' ? (
-        <p className="in-progress">In progress</p>
+      {playing ? (
+        <p className="in-progress">
+          In progress
+          <LockIcon />
+        </p>
       ) : (
         <button type="button" onClick={() => onJoin(game.name)}>
           Join

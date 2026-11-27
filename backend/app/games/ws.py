@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, WebSocket
+from fastapi import APIRouter, Depends, WebSocket, status
 
 from app.games.fanout import send_to_each
 from app.games.lobby import LobbyHub, game_summary, get_lobby_hub, lobby_snapshot
@@ -32,6 +32,7 @@ from app.games.validation import (
     validate_create_request,
     validate_join_request,
 )
+from app.settings import Settings, get_settings
 
 router = APIRouter()
 
@@ -551,7 +552,14 @@ async def game_socket(
     rooms: Annotated[GameRooms, Depends(get_game_rooms)],
     rng: Annotated[Random, Depends(get_random)],
     timing: Annotated[Timing, Depends(get_timing)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> None:
+    # Browsers always send Origin; a client without one could forge it anyway.
+    origin = websocket.headers.get("origin")
+    if origin is not None and origin not in settings.allowed_origins:
+        # Closing before accepting rejects the handshake itself.
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await websocket.accept()
     session = ClientSession(websocket, registry, hub, rooms, rng, timing)
     try:

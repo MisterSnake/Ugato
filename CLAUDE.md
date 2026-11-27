@@ -4,10 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository layout
 
-Two independent apps plus OpenSpec planning artifacts, all in one git repo at the root (no root-level build or task runner):
+Two independent apps, their deployment files and OpenSpec planning artifacts, all in one git repo at the root (no root-level build or task runner):
 
 - `backend/` — FastAPI app, Python 3.14, managed with `uv` (`pyproject.toml` + `uv.lock`).
 - `frontend/` — React 19 + TypeScript + Vite 8 app, npm (`package-lock.json`).
+- `infra/` — Bicep template of the production infrastructure (`main.bicep`).
+- `.github/workflows/` — `ci.yml` checks pull requests to `main`; `deploy.yml` deploys every push to `main`.
+- `scripts/` — `bootstrap.sh`, the one-time Azure setup, run in Azure Cloud Shell.
+- `docs/` — `DEPLOYMENT.md` (in Spanish): every manual step of deploying and operating production. Change it together with the script's parameters, the workflow job names or the Bicep outputs.
 - `openspec/` — OpenSpec config (`config.yaml`, schema `spec-driven`), `specs/` and `changes/` folders for spec-driven changes.
 
 Run commands from inside the relevant subdirectory.
@@ -32,11 +36,13 @@ Run commands from inside the relevant subdirectory.
 
 ## Architecture: how the pieces connect
 
-- `backend/app/main.py` holds the `FastAPI` instance, `GET /api/health`, and mounts the game router. New routes should go under the `/api` prefix so the Vite proxy forwards them.
+- `backend/app/main.py` has the app factory `create_app()`, the `app` instance and `GET /api/health` (status and deployed version), and mounts the game router. New routes should go under the `/api` prefix so the Vite proxy forwards them.
 - Games use one WebSocket, `WS /api/ws` (`backend/app/games/ws.py`). The message types and error codes are documented in `backend/README.md`. Before the start, a game lives only as long as its creator's connection. After the start, the host is an ordinary player, so their leaving or disconnecting does not close the game.
 - `backend/app/games/` also has the models, the pure validation rules and the in-memory `GameRegistry`. Tests override the `get_registry` dependency to get a fresh registry.
 - Because the registry is process memory, the server must run as a single worker. With more, name uniqueness breaks.
-- `frontend/vite.config.ts` proxies `/api` (with `ws: true`) to `http://localhost:8000`, so the frontend uses same-origin URLs. CORS in `app/main.py` still allows only `http://localhost:5173` for direct HTTP calls to port 8000; it does not apply to WebSockets.
+- `frontend/vite.config.ts` proxies `/api` (with `ws: true`) to `http://localhost:8000`, so the frontend uses same-origin URLs. In production there is no proxy: the frontend (Azure Static Web Apps) opens the WebSocket directly to the backend on Azure Container Apps, at the `VITE_WS_URL` set when it is built. Without that variable, `frontend/src/game/socketUrl.ts` uses `/api/ws` on the page's own host.
+- `backend/app/settings.py` reads `APP_VERSION` (default `dev`) and `ALLOWED_ORIGINS` (comma-separated, default `http://localhost:5173`). The allowed origins apply to CORS and to the WebSocket handshake, which is rejected for any other `Origin`; a handshake without `Origin` is accepted. Tests override `get_settings`, or set the variables before calling `create_app()`.
+- Production runs as a single replica (`maxReplicas: 1`, scaling to zero when idle) on free tiers only. Every deployment ends the games in progress.
 - `frontend/src/App.tsx` is the screen state machine (home → form or join → waiting → playing → finished). Screens are in `src/screens/`. Components never use `WebSocket` directly: they go through `src/game/gameSocket.ts`, and tests inject `src/test/FakeWebSocket.ts`.
 - `frontend/src/game/validation.ts` mirrors `backend/app/games/validation.py`. The server is the source of truth, so change both together.
 - Tests in `backend/tests/` use `fastapi.testclient.TestClient` against `app.main.app` directly; no server needs to be running.
