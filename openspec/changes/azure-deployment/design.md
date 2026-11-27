@@ -2,107 +2,107 @@
 
 ## Context
 
-Ver `proposal.md` (Why). Las restricciones que dan forma al diseño son estas:
+See `proposal.md` (Why). These are the constraints that shape the design:
 
-- **El estado vive en memoria del proceso** (`GameRegistry`, timers con `asyncio.create_task` en `ws.py`). Por eso el backend tiene que ser una sola instancia, y cualquier reinicio borra las partidas.
-- **El frontend abre el WebSocket hacia el mismo origen** (`App.tsx`, `gameSocketUrl()`), y `App` le pasa esa URL a la `GameSocketFactory` inyectable. Los tests ya pueden ver qué URL se usa.
-- **CORS está fijo en el código** (`http://localhost:5173`) y `ws.py` hace `websocket.accept()` sin mirar el `Origin`.
-- **El repo es público** (`github.com/MisterSnake/Ugato`) y la suscripción de Azure es Pay-As-You-Go.
-- **En la máquina local no hay `az`, `gh` ni `docker`.** Los pasos manuales tienen que poder hacerse sin instalar nada.
-- **Costo 0.** En Pay-As-You-Go no hay tope duro de gasto, así que el costo lo controlan la elección de planes y los límites de escala.
+- **State lives in process memory** (`GameRegistry`, timers with `asyncio.create_task` in `ws.py`). That is why the backend has to be a single instance, and any restart erases the games.
+- **The frontend opens the WebSocket to the same origin** (`App.tsx`, `gameSocketUrl()`), and `App` passes that URL to the injectable `GameSocketFactory`. Tests can already see which URL is used.
+- **CORS is hardcoded** (`http://localhost:5173`) and `ws.py` calls `websocket.accept()` without looking at the `Origin`.
+- **The repo is public** (`github.com/MisterSnake/Ugato`) and the Azure subscription is Pay-As-You-Go.
+- **The local machine has no `az`, `gh` or `docker`.** The manual steps have to be doable without installing anything.
+- **Cost 0.** Pay-As-You-Go has no hard spending cap, so cost is controlled by the choice of plans and the scale limits.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Que de un merge a `main` salga producción verificada, sin intervención.
-- Que los pasos manuales se hagan una sola vez, desde el navegador (Azure Cloud Shell y github.com).
-- Que no haya secretos de larga vida en GitHub.
+- A merge to `main` results in verified production, with no intervention.
+- The manual steps are done only once, from the browser (Azure Cloud Shell and github.com).
+- There are no long-lived secrets in GitHub.
 
 **Non-Goals:**
-- Persistir las partidas o hacer despliegues sin cortar las partidas en curso.
-- Escalar horizontalmente el backend.
-- Tener ambientes de staging o previews por PR (los previews de SWA quedan desactivados).
-- Usar un dominio propio. Se usan los dominios `*.azurestaticapps.net` y `*.azurecontainerapps.io`.
+- Persisting games or deploying without cutting off the games in progress.
+- Scaling the backend horizontally.
+- Having staging environments or per-PR previews (SWA previews stay disabled).
+- Using a custom domain. The `*.azurestaticapps.net` and `*.azurecontainerapps.io` domains are used.
 
 ## Decisions
 
-### 1. Topología: SWA para el frontend y ACA para el backend, con el WS directo
+### 1. Topology: SWA for the frontend and ACA for the backend, with a direct WS
 
 ```
-            navegador
+             browser
            /         \
-   https  /           \  wss (directo, Origin = SWA)
+   https  /           \  wss (direct, Origin = SWA)
          v             v
  +------------------+   +-----------------------------------+
  | Static Web App   |   | Container App  (env Consumption)  |
- | Free, dist/ +    |   | FastAPI :8000, 0..1 réplica       |
+ | Free, dist/ +    |   | FastAPI :8000, 0..1 replica       |
  | version.json     |   | ALLOWED_ORIGINS=https://<swa>     |
  +------------------+   | APP_VERSION=<sha>                 |
                         +-----------------------------------+
             rg-ugato  (eastus2)
 ```
 
-SWA no hace proxy de WebSockets, y su "linked backend" solo existe en el plan Standard, que es pago. Por eso el navegador se conecta directo al FQDN de ACA.
+SWA does not proxy WebSockets, and its "linked backend" only exists on the Standard plan, which is paid. That is why the browser connects directly to the ACA FQDN.
 
-*Alternativa considerada:* un solo contenedor en el que FastAPI sirve `dist/`. Tiene menos piezas y mantiene el mismo origen, pero el usuario prefirió SWA, que además sirve el frontend desde CDN aunque el backend esté dormido.
+*Alternative considered:* a single container in which FastAPI serves `dist/`. It has fewer pieces and keeps the same origin, but the user preferred SWA, which also serves the frontend from a CDN even when the backend is asleep.
 
 ### 2. IaC: Bicep
 
-Bicep no guarda estado (el estado es ARM), es nativo de Azure y soporta Container Apps desde el primer día. Terraform obligaría a crear y pagar un backend de estado, o a depender de HCP Terraform, y sumaría un paso manual. La plantilla se aplica con `az deployment group create` en modo incremental.
+Bicep keeps no state (the state is ARM), is native to Azure and has supported Container Apps from day one. Terraform would require creating and paying for a state backend, or depending on HCP Terraform, and would add a manual step. The template is applied with `az deployment group create` in incremental mode.
 
-`infra/main.bicep`, con `targetScope = resourceGroup`, recibe estos parámetros: `location` (por defecto `eastus2`), `namePrefix` (por defecto `ugato`), `image` (la referencia completa `ghcr.io/...:<sha>`) y `appVersion` (el SHA). Define estos recursos:
+`infra/main.bicep`, with `targetScope = resourceGroup`, takes these parameters: `location` (default `eastus2`), `namePrefix` (default `ugato`), `image` (the full reference `ghcr.io/...:<sha>`) and `appVersion` (the SHA). It defines these resources:
 
-- `Microsoft.Web/staticSites` con sku `Free`, sin `repositoryUrl`. El deploy se hace desde el pipeline, no por la integración automática de SWA con GitHub, porque esa integración crea su propio workflow y su propio secreto.
-- `Microsoft.App/managedEnvironments` con plan Consumption y **sin** `appLogsConfiguration`: no hay Log Analytics, y el log stream de la consola sigue disponible.
+- `Microsoft.Web/staticSites` with sku `Free`, without `repositoryUrl`. The deploy is done from the pipeline, not through SWA's automatic GitHub integration, because that integration creates its own workflow and its own secret.
+- `Microsoft.App/managedEnvironments` with the Consumption plan and **without** `appLogsConfiguration`: there is no Log Analytics, and the console log stream is still available.
 - `Microsoft.App/containerApps`:
   - `activeRevisionsMode: Single`;
-  - ingress `external`, `targetPort: 8000`, `transport: auto` (que admite WebSocket);
-  - escala `minReplicas: 0`, `maxReplicas: 1`, con 0.25 vCPU y 0.5 GiB;
-  - probes de liveness y readiness sobre `/api/health`;
-  - env `APP_VERSION=appVersion` y `ALLOWED_ORIGINS=https://${staticSite.properties.defaultHostname}`.
-- Outputs: `backendFqdn`, `frontendHostname` y `staticSiteName`.
+  - ingress `external`, `targetPort: 8000`, `transport: auto` (which supports WebSocket);
+  - scale `minReplicas: 0`, `maxReplicas: 1`, with 0.25 vCPU and 0.5 GiB;
+  - liveness and readiness probes on `/api/health`;
+  - env `APP_VERSION=appVersion` and `ALLOWED_ORIGINS=https://${staticSite.properties.defaultHostname}`.
+- Outputs: `backendFqdn`, `frontendHostname` and `staticSiteName`.
 
-El hostname de SWA se conoce dentro de la misma plantilla, así que `ALLOWED_ORIGINS` se arma sin un segundo paso.
+The SWA hostname is known within the same template, so `ALLOWED_ORIGINS` is built without a second step.
 
-### 3. Registro de imágenes: GHCR público
+### 3. Image registry: public GHCR
 
-La imagen es `ghcr.io/mistersnake/ugato-backend:<sha>`, en minúsculas como exige el registry. ACR Basic cuesta alrededor de USD 5/mes. GHCR es gratis para paquetes públicos, y como el pull es anónimo ACA no necesita credenciales. Un `GITHUB_TOKEN` tampoco serviría como credencial de pull, porque expira y ACA vuelve a bajar la imagen cada vez que escala desde cero.
+The image is `ghcr.io/mistersnake/ugato-backend:<sha>`, in lowercase as the registry requires. ACR Basic costs around USD 5/month. GHCR is free for public packages, and since the pull is anonymous, ACA needs no credentials. A `GITHUB_TOKEN` would not work as a pull credential either, because it expires and ACA pulls the image again every time it scales from zero.
 
-GitHub no tiene API para cambiar la visibilidad de un paquete, y un paquete nuevo puede nacer privado. Por eso, antes del despliegue de Bicep, `deploy.yml` verifica que el manifest se pueda bajar en forma anónima (pide un token anónimo a `ghcr.io/token` y hace `HEAD` del manifest). Si falla, corta con un mensaje que apunta a la sección de `docs/DEPLOYMENT.md` que explica cómo hacer pública la imagen. Pasa solo en el primer deploy.
+GitHub has no API for changing a package's visibility, and a new package may be created private. That is why, before the Bicep deployment, `deploy.yml` verifies that the manifest can be pulled anonymously (it requests an anonymous token from `ghcr.io/token` and does a `HEAD` of the manifest). If that fails, it stops with a message pointing to the section of `docs/DEPLOYMENT.md` that explains how to make the image public. This happens only on the first deploy.
 
-### 4. Autenticación GitHub → Azure: OIDC
+### 4. GitHub → Azure authentication: OIDC
 
-- `azure/login` usa `client-id`, `tenant-id` y `subscription-id` guardados como **variables** del repo (no son secretos).
-- La federated credential tiene el subject `<prefijo del repo>:ref:refs/heads/main`, así que solo los pushes a `main` pueden desplegar. El prefijo es `repo:MisterSnake/Ugato` en el formato clásico, pero los repos creados, renombrados o transferidos después del 2026-07-15 usan por defecto `repo:OWNER@ID/REPO@ID` ([changelog de GitHub](https://github.blog/changelog/2026-04-23-immutable-subject-claims-for-github-actions-oidc-tokens/)). Por eso el bootstrap no lo fija: usa `sub_claim_prefix` de la API de OIDC del repo cuando `gh` está autenticado y, si no, lo arma con los datos públicos del repo según su fecha de creación. La guía explica cómo corregirlo si el login falla con `AADSTS700213`.
-- `deploy.yml` no usa un GitHub `environment`, porque eso cambiaría el subject del token OIDC.
-- El rol es `Contributor` acotado al resource group. La plantilla no crea role assignments, así que no hace falta `Owner` ni `User Access Administrator`.
+- `azure/login` uses `client-id`, `tenant-id` and `subscription-id` stored as repo **variables** (they are not secrets).
+- The federated credential has the subject `<repo prefix>:ref:refs/heads/main`, so only pushes to `main` can deploy. The prefix is `repo:MisterSnake/Ugato` in the classic format, but repos created, renamed or transferred after 2026-07-15 use `repo:OWNER@ID/REPO@ID` by default ([GitHub changelog](https://github.blog/changelog/2026-04-23-immutable-subject-claims-for-github-actions-oidc-tokens/)). That is why the bootstrap does not hardcode it: it uses `sub_claim_prefix` from the repo's OIDC API when `gh` is authenticated and, if it is not, it builds it from the repo's public data according to its creation date. The guide explains how to fix it if the login fails with `AADSTS700213`.
+- `deploy.yml` does not use a GitHub `environment`, because that would change the subject of the OIDC token.
+- The role is `Contributor` scoped to the resource group. The template creates no role assignments, so neither `Owner` nor `User Access Administrator` is needed.
 
-*Alternativa considerada:* un client secret en `AZURE_CREDENTIALS`. Es un secreto de larga vida, que expira y hay que rotar.
+*Alternative considered:* a client secret in `AZURE_CREDENTIALS`. It is a long-lived secret that expires and has to be rotated.
 
-### 5. Bootstrap en Cloud Shell, idempotente
+### 5. Bootstrap in Cloud Shell, idempotent
 
-`scripts/bootstrap.sh` (bash, porque Cloud Shell ya trae `az` y `gh`) recibe `--repo MisterSnake/Ugato` y `--budget-email <email>`, con `--location eastus2` y `--resource-group rg-ugato` como valores por defecto opcionales. Hace esto:
+`scripts/bootstrap.sh` (bash, because Cloud Shell already includes `az` and `gh`) takes `--repo MisterSnake/Ugato` and `--budget-email <email>`, with `--location eastus2` and `--resource-group rg-ugato` as optional default values. It does this:
 
-1. `az provider register` de `Microsoft.App` y `Microsoft.Web`, y espera a que queden registrados.
-2. Crea el resource group.
-3. Crea la App Registration `ugato-github-deploy` y su service principal, si no existen.
-4. Crea la federated credential para `main`, si no existe.
-5. Asigna `Contributor` sobre el RG, si no está asignado.
-6. Crea el budget `ugato-monthly` de USD 1 sobre el RG, con alertas por email al 80% y al 100% del gasto real.
-7. Guarda las variables del repo. Si `gh auth status` está ok, usa `gh variable set AZURE_CLIENT_ID|AZURE_TENANT_ID|AZURE_SUBSCRIPTION_ID|AZURE_RESOURCE_GROUP`. Si no, imprime los valores y el enlace a *Settings → Secrets and variables → Actions → Variables* para pegarlos a mano.
+1. `az provider register` for `Microsoft.App` and `Microsoft.Web`, and waits for them to be registered.
+2. Creates the resource group.
+3. Creates the `ugato-github-deploy` App Registration and its service principal, if they do not exist.
+4. Creates the federated credential for `main`, if it does not exist.
+5. Assigns `Contributor` on the RG, if it is not assigned.
+6. Creates the USD 1 `ugato-monthly` budget on the RG, with email alerts at 80% and 100% of actual spend.
+7. Saves the repo variables. If `gh auth status` is ok, it uses `gh variable set AZURE_CLIENT_ID|AZURE_TENANT_ID|AZURE_SUBSCRIPTION_ID|AZURE_RESOURCE_GROUP`. If not, it prints the values and the link to *Settings → Secrets and variables → Actions → Variables* for pasting them by hand.
 
-Cada paso consulta antes de crear, así que correrlo dos veces no rompe nada.
+Each step checks before creating, so running it twice breaks nothing.
 
-El **budget va en el bootstrap y no en Bicep** por dos motivos. `startDate` tiene que ser el primer día de un mes y no se puede cambiar después de crear el budget, así que un `utcNow()` en la plantilla haría fallar los redeploys del mes siguiente. Además, el budget es configuración de la cuenta, no del despliegue.
+The **budget goes in the bootstrap and not in Bicep** for two reasons. `startDate` has to be the first day of a month and cannot be changed after the budget is created, so a `utcNow()` in the template would make the following month's redeploys fail. Also, the budget is account configuration, not deployment configuration.
 
 ### 6. Pipelines
 
-`ci.yml` (en `pull_request` a `main`), con jobs en paralelo:
-- `backend`: `astral-sh/setup-uv`, `uv sync --frozen` y `uv run pytest -q`. En Linux, `uv run` funciona; el problema del trampoline es solo de la máquina Windows local.
-- `frontend`: Node 22, `npm ci`, `npm run lint`, `npm test -- --run` y `npm run build`.
-- `image`: `docker build` de `backend/` sin push.
+`ci.yml` (on `pull_request` to `main`), with jobs in parallel:
+- `backend`: `astral-sh/setup-uv`, `uv sync --frozen` and `uv run pytest -q`. On Linux, `uv run` works; the trampoline problem is only on the local Windows machine.
+- `frontend`: Node 22, `npm ci`, `npm run lint`, `npm test -- --run` and `npm run build`.
+- `image`: `docker build` of `backend/` without push.
 
-`deploy.yml` (en `push` a `main`, con `concurrency: production` y `cancel-in-progress: false`):
+`deploy.yml` (on `push` to `main`, with `concurrency: production` and `cancel-in-progress: false`):
 
 ```
  test-backend --+
@@ -112,58 +112,58 @@ El **budget va en el bootstrap y no en Bicep** por dos motivos. `startDate` tien
                       |          |          |               .version == sha
                       |          |          |            +- GET https://<swa>/version.json
                       |          |          |               .version == sha
-                      |          |          |            (reintenta hasta ~3 min)
+                      |          |          |            (retries for up to ~3 min)
                       |          |          +- npm ci && npm run build
-                      |          |             con VITE_WS_URL=wss://<fqdn>/api/ws
-                      |          |          +- escribe dist/version.json
+                      |          |             with VITE_WS_URL=wss://<fqdn>/api/ws
+                      |          |          +- writes dist/version.json
                       |          |          +- token: az staticwebapp secrets list
                       |          |          +- Azure/static-web-apps-deploy
                       |          |             (app_location dist, skip_app_build)
                       |          +- azure/login (OIDC)
-                      |          +- chequeo de pull anónimo de la imagen (decisión 3)
+                      |          +- anonymous image pull check (decision 3)
                       |          +- az deployment group create -> outputs
                       +- docker build --build-arg APP_VERSION=sha
-                         push :sha (con GITHUB_TOKEN, packages: write)
+                         push :sha (with GITHUB_TOKEN, packages: write)
 ```
 
-- Permisos: `contents: read`, `packages: write` (solo el job `image`) e `id-token: write` (los jobs que usan Azure).
-- Los jobs se pasan el FQDN, el hostname y el nombre de la SWA como outputs.
-- El token de deploy de SWA se obtiene en el momento y se enmascara con `::add-mask::`. No hay que guardar ningún secreto.
-- El frontend se construye **después** de Bicep porque `VITE_WS_URL` necesita el FQDN de ACA. Ese FQDN es estable mientras no se recree el ambiente.
+- Permissions: `contents: read`, `packages: write` (only the `image` job) and `id-token: write` (the jobs that use Azure).
+- The jobs pass the FQDN, the hostname and the SWA name to each other as outputs.
+- The SWA deploy token is obtained on the spot and masked with `::add-mask::`. No secret needs to be stored.
+- The frontend is built **after** Bicep because `VITE_WS_URL` needs the ACA FQDN. That FQDN is stable as long as the environment is not recreated.
 
-### 7. Dockerfile del backend
+### 7. Backend Dockerfile
 
-- Una etapa de build con `uv`: copia el binario desde `ghcr.io/astral-sh/uv` y corre `uv sync --frozen --no-dev` sobre `python:3.14-slim`.
-- Una etapa final `python:3.14-slim` con el `.venv` y `app/`, usuario sin privilegios y `ARG/ENV APP_VERSION=dev`.
-- `CMD uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*`, con un solo worker y nunca `--workers`. `--proxy-headers` hace falta porque el Envoy de ACA termina TLS.
-- `.dockerignore` excluye `.venv`, `tests`, `.pytest_cache` y `__pycache__`.
+- A build stage with `uv`: it copies the binary from `ghcr.io/astral-sh/uv` and runs `uv sync --frozen --no-dev` on `python:3.14-slim`.
+- A final `python:3.14-slim` stage with the `.venv` and `app/`, an unprivileged user and `ARG/ENV APP_VERSION=dev`.
+- `CMD uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*`, with a single worker and never `--workers`. `--proxy-headers` is needed because ACA's Envoy terminates TLS.
+- `.dockerignore` excludes `.venv`, `tests`, `.pytest_cache` and `__pycache__`.
 
-### 8. Cambios de código (TDD)
+### 8. Code changes (TDD)
 
-- **Configuración del backend**: un módulo pequeño (por ejemplo `app/settings.py`) lee `APP_VERSION` (por defecto `"dev"`) y `ALLOWED_ORIGINS` (lista separada por comas, recortada y sin vacíos; por defecto `["http://localhost:5173"]`). Lo expone como una dependencia de FastAPI que los tests puedan sobrescribir, igual que `get_registry`. CORS lee la lista al crear la app; los tests de CORS construyen la app con la variable de entorno puesta (con `monkeypatch`) o usan una fábrica de app.
-- **Health**: agrega `version` a la respuesta.
-- **Origin en el WS**: en `ws.py`, antes de `websocket.accept()`, si `websocket.headers.get("origin")` existe y no está en la lista permitida, `await websocket.close(code=1008)`. Antes del accept, Starlette responde al handshake con HTTP 403. Sin `Origin` se acepta (ver la spec `connection-origin`). Así los tests existentes con `TestClient`, que no mandan `Origin`, siguen pasando.
-- **Frontend**: `gameSocketUrl` sale de `App.tsx` a `src/game/socketUrl.ts` como función pura `gameSocketUrl(configuredUrl: string | undefined, location: Pick<Location, 'protocol' | 'host'>)`. `App` la llama con `import.meta.env.VITE_WS_URL` y `window.location`. Se tipa `VITE_WS_URL` en `src/vite-env.d.ts` (aumentando `ImportMetaEnv`). Un string vacío cuenta como "no configurada".
-- `version.json` lo escribe el pipeline; no es código de la app.
+- **Backend configuration**: a small module (for example `app/settings.py`) reads `APP_VERSION` (default `"dev"`) and `ALLOWED_ORIGINS` (a comma-separated list, trimmed and without empty entries; default `["http://localhost:5173"]`). It exposes this as a FastAPI dependency that tests can override, just like `get_registry`. CORS reads the list when the app is created; the CORS tests build the app with the environment variable set (with `monkeypatch`) or use an app factory.
+- **Health**: adds `version` to the response.
+- **Origin on the WS**: in `ws.py`, before `websocket.accept()`, if `websocket.headers.get("origin")` exists and is not in the allowed list, `await websocket.close(code=1008)`. Before the accept, Starlette responds to the handshake with HTTP 403. Without `Origin` it is accepted (see the `connection-origin` spec). This way the existing `TestClient` tests, which do not send `Origin`, keep passing.
+- **Frontend**: `gameSocketUrl` moves out of `App.tsx` into `src/game/socketUrl.ts` as a pure function `gameSocketUrl(configuredUrl: string | undefined, location: Pick<Location, 'protocol' | 'host'>)`. `App` calls it with `import.meta.env.VITE_WS_URL` and `window.location`. `VITE_WS_URL` is typed in `src/vite-env.d.ts` (augmenting `ImportMetaEnv`). An empty string counts as "not configured".
+- `version.json` is written by the pipeline; it is not app code.
 
 ## Risks / Trade-offs
 
-- **[Cada deploy corta las partidas en curso]**: el modo de revisión `Single` reemplaza el contenedor y la memoria se pierde. → Se acepta y se documenta. Los clientes ven "Can't reach the server." y pueden reintentar.
-- **[Arranque en frío de 5 a 15 s]**: el WS espera a que despierte el backend. `gameSocket.ts` no tiene timeout propio, así que solo es lento. → Se acepta. Precalentar con `GET /api/health` al cargar la página queda como mejora futura.
-- **[Timeouts de conexiones WS inactivas en el ingress de ACA]**: Envoy puede cerrar conexiones sin tráfico. uvicorn manda pings de WebSocket cada 20 s por defecto, y eso debería mantenerlas vivas. → Se verifica en la tarea de validación manual con una partida abierta más de 5 minutos sin jugadas. Si se cortan, se baja `--ws-ping-interval`.
-- **[Pay-As-You-Go no tiene tope duro]**: un error de configuración, como `minReplicas: 1` o más CPU, podría costar. → `maxReplicas: 1`, recursos mínimos y scale-to-zero, todo en Bicep (y revisado en los PR), más el budget de USD 1 con alertas.
-- **[Abuso público]**: cualquiera puede abrir conexiones desde un cliente que no sea un navegador, y eso consume el free grant. → Fuera de alcance. El chequeo de `Origin` frena el uso desde otros sitios web, y el budget avisa.
-- **[Primer deploy con la imagen privada]**: la corrida falla en el chequeo de pull anónimo. → Mensaje claro, un paso manual documentado y *Re-run failed jobs*.
-- **[Cambia el FQDN de ACA si se recrea el ambiente]**: → No pasa en redeploys normales. Si pasa, el mismo pipeline reconstruye el frontend con el FQDN nuevo.
-- **[SWA Free sin SLA]**: → Se acepta para un juego sin SLA.
+- **[Each deploy cuts off the games in progress]**: the `Single` revision mode replaces the container and the memory is lost. → Accepted and documented. Clients see "Can't reach the server." and can retry.
+- **[Cold start of 5 to 15 s]**: the WS waits for the backend to wake up. `gameSocket.ts` has no timeout of its own, so it is only slow. → Accepted. Warming up with `GET /api/health` on page load remains a future improvement.
+- **[Idle WS connection timeouts at the ACA ingress]**: Envoy may close connections with no traffic. uvicorn sends WebSocket pings every 20 s by default, and that should keep them alive. → Verified in the manual validation task with a game left open for more than 5 minutes without moves. If they get cut, `--ws-ping-interval` is lowered.
+- **[Pay-As-You-Go has no hard cap]**: a configuration mistake, such as `minReplicas: 1` or more CPU, could cost money. → `maxReplicas: 1`, minimal resources and scale-to-zero, all in Bicep (and reviewed in PRs), plus the USD 1 budget with alerts.
+- **[Public abuse]**: anyone can open connections from a non-browser client, and that consumes the free grant. → Out of scope. The `Origin` check stops use from other websites, and the budget gives a warning.
+- **[First deploy with a private image]**: the run fails at the anonymous pull check. → A clear message, a documented manual step and *Re-run failed jobs*.
+- **[The ACA FQDN changes if the environment is recreated]**: → It does not happen on normal redeploys. If it does, the same pipeline rebuilds the frontend with the new FQDN.
+- **[SWA Free has no SLA]**: → Accepted for a game with no SLA.
 
 ## Migration Plan
 
-1. Mergear este change implementado a `main` **después** de correr el bootstrap. Sin las variables del repo, `deploy.yml` falla en el login de Azure.
-2. Primer deploy: si falla el chequeo de visibilidad, hacer pública la imagen y relanzar los jobs fallidos.
-3. **Rollback**: hacer revert del commit en `main`. El pipeline despliega el SHA anterior, porque las imágenes `:<sha>` quedan en GHCR. En una urgencia, `az containerapp update --image ghcr.io/mistersnake/ugato-backend:<sha-anterior>` desde Cloud Shell.
-4. **Desmontar todo**: `az group delete -n rg-ugato`, y borrar la App Registration y el paquete en GHCR.
+1. Merge this implemented change into `main` **after** running the bootstrap. Without the repo variables, `deploy.yml` fails at the Azure login.
+2. First deploy: if the visibility check fails, make the image public and re-run the failed jobs.
+3. **Rollback**: revert the commit on `main`. The pipeline deploys the previous SHA, because the `:<sha>` images remain in GHCR. In an emergency, `az containerapp update --image ghcr.io/mistersnake/ugato-backend:<previous-sha>` from Cloud Shell.
+4. **Tear everything down**: `az group delete -n rg-ugato`, and delete the App Registration and the package in GHCR.
 
 ## Open Questions
 
-- ¿Hace falta bajar `--ws-ping-interval`? Se resuelve con la validación de la partida inactiva en producción.
+- Does `--ws-ping-interval` need to be lowered? This is resolved by validating an idle game in production.

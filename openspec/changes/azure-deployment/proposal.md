@@ -2,42 +2,42 @@
 
 ## Why
 
-Hoy U Cat solo corre en local (`uvicorn` + `npm run dev`). Necesitamos tenerlo en producción en Azure, sin costo, y que cada merge a `main` publique la versión nueva automáticamente, sin pasos a mano. Al exponer el backend en internet, además, hay que impedir que otros sitios abran WebSockets contra él.
+Today U Cat only runs locally (`uvicorn` + `npm run dev`). We need to have it in production on Azure, at no cost, and have every merge to `main` publish the new version automatically, with no manual steps. Exposing the backend on the internet also means we have to prevent other sites from opening WebSockets against it.
 
 ## What Changes
 
-- **Infraestructura como código (Bicep)** en `infra/`: Azure Static Web Apps (plan Free) para el frontend y Azure Container Apps (Consumption, 0 a 1 réplica, sin Log Analytics) para el backend, en `eastus2`, dentro de un resource group dedicado.
-- **Dockerfile del backend** (`backend/Dockerfile`): imagen `python:3.14-slim` con `uv`, un solo worker de `uvicorn`. La imagen se publica en GitHub Container Registry (público, gratis), así que no hay ACR.
-- **CI/CD en GitHub Actions**:
-  - `ci.yml` en cada pull request: tests del backend, lint, tests y build del frontend, y build de la imagen sin publicarla.
-  - `deploy.yml` en cada push a `main`: tests, publicación de la imagen `:<sha>`, despliegue de Bicep, build del frontend apuntando al backend, despliegue a SWA y un smoke test que falla si producción no sirve el commit recién mergeado.
-  - Autenticación con Azure por OIDC (federated credential), sin secretos de larga vida.
-- **Script de bootstrap** (`scripts/bootstrap.sh`), para correr una sola vez en Azure Cloud Shell: registra los providers, crea el resource group, la identidad de despliegue con su federated credential y el rol acotado al RG, crea un budget de alerta de USD 1 y guarda las variables del repo.
-- **Guía de pasos manuales** (`docs/DEPLOYMENT.md`), reducida al mínimo: correr el bootstrap y, después del primer push, marcar como pública la imagen en ghcr.
+- **Infrastructure as code (Bicep)** in `infra/`: Azure Static Web Apps (Free plan) for the frontend and Azure Container Apps (Consumption, 0 to 1 replica, without Log Analytics) for the backend, in `eastus2`, inside a dedicated resource group.
+- **Backend Dockerfile** (`backend/Dockerfile`): a `python:3.14-slim` image with `uv`, a single `uvicorn` worker. The image is published to GitHub Container Registry (public, free), so there is no ACR.
+- **CI/CD on GitHub Actions**:
+  - `ci.yml` on every pull request: backend tests, frontend lint, tests and build, and an image build without publishing it.
+  - `deploy.yml` on every push to `main`: tests, publishing the `:<sha>` image, Bicep deployment, a frontend build pointing at the backend, deployment to SWA and a smoke test that fails if production does not serve the newly merged commit.
+  - Authentication with Azure through OIDC (federated credential), with no long-lived secrets.
+- **Bootstrap script** (`scripts/bootstrap.sh`), to be run only once in Azure Cloud Shell: it registers the providers, creates the resource group, the deployment identity with its federated credential and the role scoped to the RG, creates a USD 1 alert budget and saves the repo variables.
+- **Manual steps guide** (`docs/DEPLOYMENT.md`), reduced to the minimum: run the bootstrap and, after the first push, mark the image as public on ghcr.
 - **Backend**:
-  - `GET /api/health` devuelve también la versión desplegada: `{"status": "ok", "version": "<sha>"}`, o `"dev"` en local.
-  - Los orígenes permitidos se configuran con `ALLOWED_ORIGINS`, que aplica a CORS y al WebSocket.
-  - **BREAKING (solo para clientes de otros orígenes)**: el handshake de `/api/ws` se rechaza cuando el header `Origin` está presente y no es un origen permitido.
-- **Frontend**: la URL del WebSocket sale de `VITE_WS_URL` cuando está definida en el build. Si no lo está, sigue siendo la del mismo origen, así que el desarrollo local con el proxy de Vite no cambia.
+  - `GET /api/health` also returns the deployed version: `{"status": "ok", "version": "<sha>"}`, or `"dev"` locally.
+  - The allowed origins are configured with `ALLOWED_ORIGINS`, which applies to CORS and to the WebSocket.
+  - **BREAKING (only for clients from other origins)**: the `/api/ws` handshake is rejected when the `Origin` header is present and is not an allowed origin.
+- **Frontend**: the WebSocket URL comes from `VITE_WS_URL` when it is defined at build time. If it is not, it is still the same-origin one, so local development with the Vite proxy does not change.
 
-Fuera de alcance: dominio propio, persistencia de partidas (cada deploy, reinicio o scale-to-zero borra las partidas en curso), ambientes de staging o previews por PR, y observabilidad más allá del log stream de Container Apps.
+Out of scope: a custom domain, game persistence (every deploy, restart or scale-to-zero erases the games in progress), staging environments or per-PR previews, and observability beyond the Container Apps log stream.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `deployment`: cómo llega el juego a producción y qué garantiza esa producción. Cubre el despliegue automático al hacer merge a `main`, la versión en `/api/health` y su verificación, el endpoint del WebSocket configurable en el frontend, y los límites de escala y costo (una sola réplica del backend, todo en planes gratuitos).
-- `connection-origin`: qué orígenes pueden usar el backend. Cubre la lista de orígenes permitidos por configuración, su aplicación a CORS y el rechazo del handshake WebSocket desde un origen no permitido.
+- `deployment`: how the game reaches production and what that production guarantees. It covers automatic deployment on merge to `main`, the version in `/api/health` and its verification, the configurable WebSocket endpoint in the frontend, and the scale and cost limits (a single backend replica, everything on free plans).
+- `connection-origin`: which origins can use the backend. It covers the list of allowed origins set by configuration, its application to CORS and the rejection of the WebSocket handshake from a disallowed origin.
 
 ### Modified Capabilities
 
-Ninguna. Los requisitos de `game-creation`, `game-joining`, `game-lobby`, `game-play` y `turn-timer` siguen vigentes tal como están. Un rechazo por origen se ve en el cliente como una conexión fallida, que ya cubre "Disconnected lobby with manual retry".
+None. The requirements of `game-creation`, `game-joining`, `game-lobby`, `game-play` and `turn-timer` remain in force as they are. A rejection by origin appears on the client as a failed connection, which "Disconnected lobby with manual retry" already covers.
 
 ## Impact
 
-- **Archivos nuevos**: `backend/Dockerfile`, `backend/.dockerignore`, `infra/main.bicep` (y sus parámetros), `.github/workflows/ci.yml`, `.github/workflows/deploy.yml`, `scripts/bootstrap.sh`, `docs/DEPLOYMENT.md`.
-- **Backend**: `app/main.py` (versión en health y CORS desde la configuración), `app/games/ws.py` (chequeo de `Origin` antes de `accept`) y un módulo pequeño de configuración. Se agregan tests en `backend/tests/`.
-- **Frontend**: la función que arma la URL del WebSocket sale de `App.tsx` a un módulo testeable que lee `VITE_WS_URL`, junto con la declaración de tipos del env de Vite.
-- **Documentación**: `backend/README.md` (respuesta de health y `ALLOWED_ORIGINS`) y `CLAUDE.md` (despliegue y variables).
-- **Servicios externos**: una suscripción de Azure Pay-As-You-Go (Static Web Apps Free y Container Apps dentro del free grant mensual), GitHub Actions y GitHub Container Registry (gratis porque el repo es público).
-- **Operación**: cada deploy reemplaza la revisión del backend y termina las partidas en curso. La primera visita después de un rato sin uso tarda unos segundos por el arranque en frío.
+- **New files**: `backend/Dockerfile`, `backend/.dockerignore`, `infra/main.bicep` (and its parameters), `.github/workflows/ci.yml`, `.github/workflows/deploy.yml`, `scripts/bootstrap.sh`, `docs/DEPLOYMENT.md`.
+- **Backend**: `app/main.py` (version in health and CORS from the configuration), `app/games/ws.py` (`Origin` check before `accept`) and a small configuration module. Tests are added in `backend/tests/`.
+- **Frontend**: the function that builds the WebSocket URL moves out of `App.tsx` into a testable module that reads `VITE_WS_URL`, along with the type declaration for the Vite env.
+- **Documentation**: `backend/README.md` (health response and `ALLOWED_ORIGINS`) and `CLAUDE.md` (deployment and variables).
+- **External services**: an Azure Pay-As-You-Go subscription (Static Web Apps Free and Container Apps within the monthly free grant), GitHub Actions and GitHub Container Registry (free because the repo is public).
+- **Operations**: each deploy replaces the backend revision and ends the games in progress. The first visit after a period without use takes a few seconds because of the cold start.
