@@ -58,7 +58,7 @@ Backend commands, from `backend/`: `./.venv/Scripts/python.exe -m pytest -q`. Fr
 
 ## 4. Continuous integration on pull requests
 
-- [ ] 4.1 Create `.github/workflows/ci.yml` (decision 6) with the jobs `backend` (uv + pytest), `frontend` (Node 22: `npm ci`, lint, `npm test -- --run`, build), `image` (`docker build backend/` without push) and `infra` (`az bicep build --file infra/main.bicep` and `shellcheck scripts/bootstrap.sh`, once they exist). Without Azure access. Verify: when this change's PR is opened, all jobs pass on GitHub, and a test broken on purpose in a test branch makes the corresponding job fail.
+- [x] 4.1 Create `.github/workflows/ci.yml` (decision 6) with the jobs `backend` (uv + pytest), `frontend` (Node 22: `npm ci`, lint, `npm test -- --run`, build), `image` (`docker build backend/` without push) and `infra` (`az bicep build --file infra/main.bicep` and `shellcheck scripts/bootstrap.sh`, once they exist). Without Azure access. Verify: when this change's PR is opened, all jobs pass on GitHub, and a test broken on purpose in a test branch makes the corresponding job fail.
 
 ## 5. Infrastructure (Bicep)
 
@@ -73,7 +73,7 @@ Backend commands, from `backend/`: `./.venv/Scripts/python.exe -m pytest -q`. Fr
 
 ## 6. Bootstrap and manual steps guide
 
-- [ ] 6.1 Create `scripts/bootstrap.sh` (decision 5): idempotent, with `set -euo pipefail` and the parameters `--repo`, `--budget-email`, `--location` and `--resource-group`. It registers providers, creates the RG, the App Registration, the service principal, the `main` federated credential, the `Contributor` role on the RG and the USD 1 budget, and saves the variables with `gh` or prints them. It is infrastructure, with no unit test. Verify: `shellcheck` passes in the CI `infra` job, and running it twice in a row in Cloud Shell finishes without errors and without duplicating resources (see 8.1).
+- [x] 6.1 Create `scripts/bootstrap.sh` (decision 5): idempotent, with `set -euo pipefail` and the parameters `--repo`, `--budget-email`, `--location` and `--resource-group`. It registers providers, creates the RG, the App Registration, the service principal, the `main` federated credential, the `Contributor` role on the RG and the USD 1 budget, and saves the variables with `gh` or prints them. It is infrastructure, with no unit test. Verify: `shellcheck` passes in the CI `infra` job, and running it twice in a row in Cloud Shell finishes without errors and without duplicating resources (see 8.1).
 - [x] 6.2 Write `docs/DEPLOYMENT.md`, in Spanish, with:
   - requirements (Pay-As-You-Go subscription, admin permissions on the repo);
   - step 1, the bootstrap in Cloud Shell, with the exact command and how to authenticate `gh` there or paste the variables by hand;
@@ -107,21 +107,21 @@ Backend commands, from `backend/`: `./.venv/Scripts/python.exe -m pytest -q`. Fr
 
 ## 8. End-to-end verification
 
-- [ ] 8.1 First real deployment:
+- [x] 8.1 First real deployment:
   1. run the bootstrap in Cloud Shell following only `docs/DEPLOYMENT.md`, and once more to confirm it is idempotent;
   2. merge into `main`;
   3. resolve the image visibility if asked;
   4. check that `deploy.yml` finishes green with the smoke test.
 
   Verify: the job summary shows both URLs, and both report the merged SHA. Also, no action outside the guide was needed; if one was, it is added to `docs/DEPLOYMENT.md` before closing the task.
-- [ ] 8.2 Functional validation in production:
+- [x] 8.2 Functional validation in production:
   - open the SWA URL in two browsers, create a game, join and play several moves;
   - leave the game idle for more than 5 minutes and check that it stays connected (resolves the design's open question about `--ws-ping-interval`);
   - from the browser console on another site, `new WebSocket('wss://<fqdn>/api/ws')` fails.
 
   Verify: everything behaves as described. If the idle connection gets cut, adjust the ping in the Dockerfile and deploy again.
-- [ ] 8.3 Verify the cost: in the portal, that the resource group has only the Static Web App (Free), the environment and the container app; that the container app scales to 0 replicas after a while without traffic; and that the `ugato-monthly` budget exists. Verify: with screenshots or the output of `az resource list -g rg-ugato -o table` and `az containerapp replica list`.
-- [ ] 8.4 Confirm the requested flow: a small visible change, merged into `main` through a PR, appears in production without manual intervention. Verify: `/version.json` and `/api/health` show the new SHA and the change is visible on the site.
+- [x] 8.3 Verify the cost: in the portal, that the resource group has only the Static Web App (Free), the environment and the container app; that the container app scales to 0 replicas after a while without traffic; and that the `ugato-monthly` budget exists. Verify: with screenshots or the output of `az resource list -g rg-ugato -o table` and `az containerapp replica list`.
+- [x] 8.4 Confirm the requested flow: a small visible change, merged into `main` through a PR, appears in production without manual intervention. Verify: `/version.json` and `/api/health` show the new SHA and the change is visible on the site.
 
 ## Workflow follow-up
 
